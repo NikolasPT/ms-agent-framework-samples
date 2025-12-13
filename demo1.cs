@@ -16,7 +16,6 @@ using Azure.AI.OpenAI;
 using Microsoft.Agents.AI;
 using OpenAI;
 using Microsoft.Extensions.Configuration;
-using OpenAI.Models;
 
 // Save a secret using the CLI first, example below:
 // dotnet user-secrets set "AzureAIFoundry:GPT41:APIKey" "your-secret-key-here" --id "my-script-secrets-id"

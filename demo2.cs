@@ -25,6 +25,8 @@ using Microsoft.Extensions.AI;
 using OpenAI;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
+using System.Text.RegularExpressions;
+using System.Net;
 
 // Load secrets using the same ID you used in the CLI
 var config = new ConfigurationBuilder()
@@ -34,10 +36,10 @@ var config = new ConfigurationBuilder()
 string AzureAIFoundry_GPT41_APIKey = config["AzureAIFoundry:GPT41:APIKey"]!;
 string AzureAIFoundry_GPT41_Endpoint = config["AzureAIFoundry:GPT41:Endpoint"]!;
 
-// Read command-line flags for optional verbose tracing
-bool verboseAgent = System.Array.Exists(Environment.GetCommandLineArgs(),
-    a => string.Equals(a, "--verbose-agent", System.StringComparison.OrdinalIgnoreCase) ||
-         string.Equals(a, "--verbose", System.StringComparison.OrdinalIgnoreCase));
+// Read command-line flags for optional tracing
+var commandLineArgs = Environment.GetCommandLineArgs();
+bool traceAgent = System.Array.Exists(commandLineArgs,
+    a => string.Equals(a, "--trace", System.StringComparison.OrdinalIgnoreCase));
 
 // Configure Azure OpenAI client with pipeline logging so we can see
 // the raw JSON requests and responses when verbose mode is enabled.
@@ -51,7 +53,7 @@ ILoggerFactory loggerFactory = Microsoft.Extensions.Logging.LoggerFactory.Create
 var clientOptions = new AzureOpenAIClientOptions();
 var loggingOptions = clientOptions.ClientLoggingOptions ?? new ClientLoggingOptions();
 clientOptions.ClientLoggingOptions = loggingOptions;
-loggingOptions.EnableLogging = verboseAgent;
+loggingOptions.EnableLogging = traceAgent;
 // Disable the SDK's own HTTP message/body logging to avoid
 // duplicative and noisy "data: {...}" streaming chunks. We rely
 // on RawJsonLoggingPolicy below for pretty JSON instead.
@@ -63,7 +65,7 @@ loggingOptions.MessageContentSizeLimit = 1024 * 1024; // 1 MB per message body
 // Add a custom raw JSON logging policy so we can see nicely
 // formatted HTTP request and response bodies similar to the
 // Semantic Kernel RawWireLogger sample.
-clientOptions.AddPolicy(new RawJsonLoggingPolicy(verboseAgent), PipelinePosition.BeforeTransport);
+clientOptions.AddPolicy(new RawJsonLoggingPolicy(traceAgent), PipelinePosition.BeforeTransport);
 
 #endregion setup
 
@@ -129,7 +131,7 @@ AIAgent travelAdvisorAgent = azureOpenAIClient
 AnsiConsole.MarkupLine("[cyan]✅ Travel Advisor Agent created with LocationExpert as a tool[/]");
 AnsiConsole.WriteLine();
 
-if (verboseAgent)
+if (traceAgent)
 {
     var infoPanel = new Panel(
         "[white]Main Agent:[/] Travel Advisor (friendly, conversational)\n" +
@@ -151,7 +153,7 @@ AnsiConsole.Write("User: ");
 string prompt = Console.ReadLine() ?? string.Empty;
 AnsiConsole.WriteLine();
 
-if (verboseAgent)
+if (traceAgent)
 {
     AnsiConsole.MarkupLine($"[dim]🎯 User prompt:[/] [white]{prompt}[/]");
     AnsiConsole.WriteLine();
@@ -225,7 +227,7 @@ await foreach (var update in travelAdvisorAgent.RunStreamingAsync(prompt))
 
                 // If possible, parse and summarize key fields so you can see
                 // what the main agent is reasoning over.
-                if (verboseAgent && !string.IsNullOrWhiteSpace(resultText))
+                if (traceAgent && !string.IsNullOrWhiteSpace(resultText))
                 {
                     try
                     {
@@ -292,7 +294,7 @@ await foreach (var update in travelAdvisorAgent.RunStreamingAsync(prompt))
                 if (resultLength > 0)
                 {
                     AnsiConsole.WriteLine();
-                    var panel = new Panel(resultText)
+                    var panel = new Panel(Markup.Escape(resultText))
                     {
                         Header = new PanelHeader("[cyan]Data Returned from LocationExpert[/]", Justify.Left),
                         Border = BoxBorder.Rounded,
@@ -328,14 +330,6 @@ AnsiConsole.WriteLine();
 // Additional information for the user
 AnsiConsole.Write(new Rule().RuleStyle(Style.Parse("yellow dim")));
 AnsiConsole.WriteLine();
-AnsiConsole.MarkupLine("[dim]💡 Notice how the Travel Advisor automatically calls the LocationExpert agent to get real-time data![/]");
-AnsiConsole.WriteLine();
-AnsiConsole.MarkupLine("[dim italic]The output above shows:[/]");
-AnsiConsole.MarkupLine("[dim]  • [magenta]Magenta[/] - When Main Agent invokes LocationExpert with arguments[/]");
-AnsiConsole.MarkupLine("[dim]  • [yellow]Yellow[/] - LocationExpert fetching data from external APIs[/]");
-AnsiConsole.MarkupLine("[dim]  • [cyan]Cyan[/] - LocationExpert returning data back to Main Agent[/]");
-AnsiConsole.MarkupLine("[dim]  • [green]Green[/] - Main Agent's final response using the received data[/]");
-AnsiConsole.WriteLine();
 AnsiConsole.WriteLine();
 
 // ============================================================================
@@ -349,15 +343,27 @@ AnsiConsole.WriteLine();
 static async Task<string> GetLocationInfo([Description("The name of the country (e.g., 'Japan', 'Brazil', 'France')")] string countryName)
 {
     using var httpClient = new HttpClient();
-    bool hideRaw = System.Array.Exists(Environment.GetCommandLineArgs(), a => string.Equals(a, "--hide-raw", System.StringComparison.OrdinalIgnoreCase));
-    bool verboseAgent = System.Array.Exists(Environment.GetCommandLineArgs(), a => string.Equals(a, "--verbose-agent", System.StringComparison.OrdinalIgnoreCase) || string.Equals(a, "--verbose", System.StringComparison.OrdinalIgnoreCase));
+    var commandLineArgs = Environment.GetCommandLineArgs();
+    bool showRaw = System.Array.Exists(commandLineArgs,
+        a => string.Equals(a, "--show-raw", System.StringComparison.OrdinalIgnoreCase));
+    bool traceAgent = System.Array.Exists(commandLineArgs,
+        a => string.Equals(a, "--trace", System.StringComparison.OrdinalIgnoreCase));
     
+    void PrintPrettyJson(JsonDocument doc)
+    {
+        using var stream = new MemoryStream();
+        using var writer = new Utf8JsonWriter(stream, new JsonWriterOptions { Indented = true });
+        doc.WriteTo(writer);
+        writer.Flush();
+        AnsiConsole.WriteLine(Encoding.UTF8.GetString(stream.ToArray()));
+    }
+
     try
     {
         AnsiConsole.MarkupLine($"[yellow bold]📡 LocationExpert Agent: Fetching data for {countryName}[/]");
         AnsiConsole.WriteLine();
 
-        if (verboseAgent)
+        if (traceAgent)
         {
             AnsiConsole.MarkupLine("[dim yellow]   (Tool entry) Main agent has invoked GetLocationInfo; starting external API calls...[/]");
             AnsiConsole.WriteLine();
@@ -381,10 +387,10 @@ static async Task<string> GetLocationInfo([Description("The name of the country 
         using var countryDoc = JsonDocument.Parse(countryResponseText);
 
         AnsiConsole.MarkupLine($"[yellow]   ✓ Received country data[/]");
-        if (!hideRaw)
+        if (showRaw)
         {
             AnsiConsole.MarkupLine("[dim yellow]     Raw REST Countries response JSON:[/]");
-            AnsiConsole.WriteLine(countryResponseText);
+            PrintPrettyJson(countryDoc);
             AnsiConsole.WriteLine();
         }
 
@@ -436,6 +442,8 @@ static async Task<string> GetLocationInfo([Description("The name of the country 
         string? travelAdviceUpdatedAt = null;
         string? travelAdviceLatestChange = null;
         var travelAdviceRecentChanges = new List<(string Date, string Summary)>();
+        var travelAdviceParts = new List<(string Title, string Body)>();
+        string? adviceResponseText = null;
 
         try
         {
@@ -449,10 +457,10 @@ static async Task<string> GetLocationInfo([Description("The name of the country 
             var adviceIndexRoot = adviceIndexDoc.RootElement;
 
             AnsiConsole.MarkupLine("[yellow]   ✓ Received travel advice index data[/]");
-            if (!hideRaw)
+            if (showRaw)
             {
                 AnsiConsole.MarkupLine("[dim yellow]     Raw GOV.UK index response JSON:[/]");
-                AnsiConsole.WriteLine(adviceIndexResponseText);
+                PrintPrettyJson(adviceIndexDoc);
                 AnsiConsole.WriteLine();
             }
 
@@ -530,15 +538,15 @@ static async Task<string> GetLocationInfo([Description("The name of the country 
                     AnsiConsole.MarkupLine($"[dim yellow]     matched country = {matchedCountryName} (slug: {matchedSlug})[/]");
                     AnsiConsole.MarkupLine($"[dim yellow]     URL: {adviceUrl}[/]");
 
-                    var adviceResponseText = await httpClient.GetStringAsync(adviceUrl);
+                    adviceResponseText = await httpClient.GetStringAsync(adviceUrl);
                     using var adviceDoc = JsonDocument.Parse(adviceResponseText);
                     var adviceRoot = adviceDoc.RootElement;
 
                     AnsiConsole.MarkupLine("[yellow]   ✓ Received travel advice detail data[/]");
-                    if (!hideRaw)
+                    if (showRaw)
                     {
-                        AnsiConsole.MarkupLine("[dim yellow]     Raw GOV.UK detail response JSON (truncated display is expected):[/]");
-                        AnsiConsole.WriteLine(adviceResponseText);
+                        AnsiConsole.MarkupLine("[dim yellow]     Raw GOV.UK detail response JSON:[/]");
+                        PrintPrettyJson(adviceDoc);
                         AnsiConsole.WriteLine();
                     }
 
@@ -601,6 +609,23 @@ static async Task<string> GetLocationInfo([Description("The name of the country 
                                 count++;
                             }
                         }
+
+                        if (detailsRoot.TryGetProperty("parts", out var partsElement) &&
+                            partsElement.ValueKind == JsonValueKind.Array)
+                        {
+                            foreach (var part in partsElement.EnumerateArray())
+                            {
+                                var title = part.GetProperty("title").GetString() ?? "";
+                                var body = part.GetProperty("body").GetString() ?? "";
+                                // Strip HTML
+                                body = Regex.Replace(body, "<.*?>", " ");
+                                body = WebUtility.HtmlDecode(body);
+                                // Normalize whitespace
+                                body = Regex.Replace(body, "\\s+", " ").Trim();
+                                
+                                travelAdviceParts.Add((title, body));
+                            }
+                        }
                     }
                 }
                 else
@@ -628,12 +653,12 @@ static async Task<string> GetLocationInfo([Description("The name of the country 
         // Show the input data used for this endpoint
         AnsiConsole.MarkupLine("[yellow]   Input for Open-Meteo API:[/]");
         AnsiConsole.MarkupLine($"[dim yellow]     location = {capital} (country: {officialName})[/]");
-        AnsiConsole.MarkupLine($"[dim yellow]     latitude = {latitude}, longitude = {longitude}[/]");
+        AnsiConsole.MarkupLine($"[dim yellow]     latitude = {latitude.ToString(CultureInfo.InvariantCulture)}, longitude = {longitude.ToString(CultureInfo.InvariantCulture)}[/]");
         AnsiConsole.MarkupLine("[dim yellow]     current fields = temperature_2m, relative_humidity_2m, apparent_temperature, precipitation, weather_code, wind_speed_10m[/]");
         AnsiConsole.MarkupLine("[dim yellow]     timezone = auto[/]");
         
         // Call Open-Meteo API to get current weather
-        var weatherUrl = $"https://api.open-meteo.com/v1/forecast?latitude={latitude}&longitude={longitude}&current=temperature_2m,relative_humidity_2m,apparent_temperature,precipitation,weather_code,wind_speed_10m&timezone=auto";
+        var weatherUrl = $"https://api.open-meteo.com/v1/forecast?latitude={latitude.ToString(CultureInfo.InvariantCulture)}&longitude={longitude.ToString(CultureInfo.InvariantCulture)}&current=temperature_2m,relative_humidity_2m,apparent_temperature,precipitation,weather_code,wind_speed_10m&timezone=auto";
 
         var weatherResponseText = await httpClient.GetStringAsync(weatherUrl);
         using var weatherDoc = JsonDocument.Parse(weatherResponseText);
@@ -641,10 +666,10 @@ static async Task<string> GetLocationInfo([Description("The name of the country 
 
         AnsiConsole.WriteLine();
         AnsiConsole.MarkupLine($"[yellow]   ✓ Received weather data[/]");
-        if (!hideRaw)
+        if (showRaw)
         {
             AnsiConsole.MarkupLine("[dim yellow]     Raw Open-Meteo response JSON:[/]");
-            AnsiConsole.WriteLine(weatherResponseText);
+            PrintPrettyJson(weatherDoc);
             AnsiConsole.WriteLine();
         }
 
@@ -803,14 +828,46 @@ static async Task<string> GetLocationInfo([Description("The name of the country 
                     writer.WriteEndArray();
                 }
 
+                if (travelAdviceParts.Count > 0)
+                {
+                    writer.WritePropertyName("detailed_advice");
+                    writer.WriteStartArray();
+                    foreach (var part in travelAdviceParts)
+                    {
+                        writer.WriteStartObject();
+                        writer.WriteString("title", part.Title);
+                        writer.WriteString("details", part.Body);
+                        writer.WriteEndObject();
+                    }
+                    writer.WriteEndArray();
+                }
+
                 writer.WriteEndObject();
             }
+
+            // Add raw API responses
+            writer.WritePropertyName("raw_api_responses");
+            writer.WriteStartObject();
+            
+            writer.WritePropertyName("rest_countries");
+            writer.WriteRawValue(countryResponseText);
+
+            writer.WritePropertyName("open_meteo");
+            writer.WriteRawValue(weatherResponseText);
+
+            if (!string.IsNullOrEmpty(adviceResponseText))
+            {
+                writer.WritePropertyName("gov_uk_detail");
+                writer.WriteRawValue(adviceResponseText);
+            }
+            
+            writer.WriteEndObject();
 
             writer.WriteEndObject();
         }
         var payload = Encoding.UTF8.GetString(stream.ToArray());
 
-        if (verboseAgent)
+        if (traceAgent)
         {
             try
             {
@@ -846,6 +903,13 @@ static async Task<string> GetLocationInfo([Description("The name of the country 
             {
                 // If we somehow fail here, just skip the extra summary.
             }
+        }
+
+        if (showRaw)
+        {
+            AnsiConsole.MarkupLine("[dim yellow]     Raw LocationExpert response JSON:[/]");
+            AnsiConsole.WriteLine(payload);
+            AnsiConsole.WriteLine();
         }
 
         return payload;
