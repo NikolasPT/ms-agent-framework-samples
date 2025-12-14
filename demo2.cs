@@ -30,7 +30,7 @@ using System.Net;
 
 // Load secrets using the same ID you used in the CLI
 var config = new ConfigurationBuilder()
-    .AddUserSecrets("ms-agent-framework-demo-secrets")
+    .AddUserSecrets("ms-agent-framework-samples-secrets")
     .Build();
 
 string AzureAIFoundry_GPT41_APIKey = config["AzureAIFoundry:GPT41:APIKey"]!;
