@@ -3,30 +3,25 @@
 #:package Spectre.Console@0.54.0
 #:package Microsoft.Agents.AI@1.0.0-preview.251125.1
 #:package Microsoft.Agents.AI.OpenAI@1.0.0-preview.251125.1
-#:package Azure.AI.OpenAI@2.1.0
-#:package Azure.Identity@1.17.1
 #:package OpenAI@2.7.0
 #:package Microsoft.Extensions.Configuration.UserSecrets@9.0.0
 #:package Microsoft.Extensions.Configuration.Binder@9.0.0
-#:package Microsoft.Extensions.Configuration.Json@9.0.0
 
 using System.ClientModel;
 using Spectre.Console;
-using Azure.AI.OpenAI;
 using Microsoft.Agents.AI;
 using OpenAI;
 using Microsoft.Extensions.Configuration;
 
-// Save a secret using the CLI first, example below:
-// dotnet user-secrets set "AzureAIFoundry:GPT41:APIKey" "your-secret-key-here" --id "my-script-secrets-id"
+// Load secrets using the CLI first:
+// dotnet user-secrets set "OpenAI:ApiKey" "your-secret-key-here" --id "ms-agent-framework-samples-secrets"
 
-// Load secrets using the same ID you used in the CLI
 var config = new ConfigurationBuilder()
-    .AddUserSecrets("ms-agent-framework-samples-secrets") // Secrets ID
+    .AddUserSecrets("ms-agent-framework-samples-secrets")
     .Build();
 
-string AzureAIFoundry_GPT41_APIKey = config["AzureAIFoundry:GPT41:APIKey"]!;
-string AzureAIFoundry_GPT41_Endpoint = config["AzureAIFoundry:GPT41:Endpoint"]!;
+string OPENAI_API_KEY = config["OpenAI:ApiKey"]!;
+const string CHAT_MODEL_ID = "gpt-5-mini";
 
 #endregion setup
 
@@ -37,7 +32,7 @@ string AzureAIFoundry_GPT41_Endpoint = config["AzureAIFoundry:GPT41:Endpoint"]!;
  * This sample demonstrates the core basics of the Agent Framework:
  * 
  * 1. Agent Creation: How to initialize an `AIAgent` and supply it with instructions.
- * 2. Model Configuration: Setting up the chat client with a specific model (e.g., gpt-4.1).
+ * 2. Model Configuration: Setting up the chat client with a specific model (e.g., gpt-5-mini).
  * 3. Streaming Response: Using `RunStreamingAsync` to receive and display tokens in real-time.
  * 
  * Reference: https://learn.microsoft.com/en-us/agent-framework/tutorials/agents/run-agent
@@ -47,11 +42,9 @@ string AzureAIFoundry_GPT41_Endpoint = config["AzureAIFoundry:GPT41:Endpoint"]!;
 // Define agent instructions (This gives the agent a role or behavior)
 string instructions = "You are a funny stand-up comedian. You love jokes. You will always reply with at least one joke.";
 
-// Create the agent
-AIAgent agent = new AzureOpenAIClient(
-  new Uri(AzureAIFoundry_GPT41_Endpoint),
-  new ApiKeyCredential(AzureAIFoundry_GPT41_APIKey))
-    .GetChatClient("gpt-4.1")
+// Create the agent using OpenAI
+AIAgent agent = new OpenAIClient(new ApiKeyCredential(OPENAI_API_KEY))
+    .GetChatClient(CHAT_MODEL_ID)
     .CreateAIAgent(instructions: instructions);
 
 // Define the prompt

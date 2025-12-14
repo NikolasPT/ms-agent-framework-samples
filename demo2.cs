@@ -3,12 +3,9 @@
 #:package Spectre.Console@0.54.0
 #:package Microsoft.Agents.AI@1.0.0-preview.251125.1
 #:package Microsoft.Agents.AI.OpenAI@1.0.0-preview.251125.1
-#:package Azure.AI.OpenAI@2.1.0
-#:package Azure.Identity@1.17.1
 #:package OpenAI@2.7.0
 #:package Microsoft.Extensions.Configuration.UserSecrets@9.0.0
 #:package Microsoft.Extensions.Configuration.Binder@9.0.0
-#:package Microsoft.Extensions.Configuration.Json@9.0.0
 #:package Microsoft.Extensions.Logging.Console@9.0.0
 
 using System.ClientModel;
@@ -19,7 +16,6 @@ using System.Text;
 using System.Text.Json;
 using System.Globalization;
 using Spectre.Console;
-using Azure.AI.OpenAI;
 using Microsoft.Agents.AI;
 using Microsoft.Extensions.AI;
 using OpenAI;
@@ -33,8 +29,8 @@ var config = new ConfigurationBuilder()
     .AddUserSecrets("ms-agent-framework-samples-secrets")
     .Build();
 
-string AzureAIFoundry_GPT41_APIKey = config["AzureAIFoundry:GPT41:APIKey"]!;
-string AzureAIFoundry_GPT41_Endpoint = config["AzureAIFoundry:GPT41:Endpoint"]!;
+string OPENAI_API_KEY = config["OpenAI:ApiKey"]!;
+const string CHAT_MODEL_ID = "gpt-5-mini";
 
 // Read command-line flags for optional tracing
 var commandLineArgs = Environment.GetCommandLineArgs();
@@ -50,7 +46,7 @@ ILoggerFactory loggerFactory = Microsoft.Extensions.Logging.LoggerFactory.Create
         .SetMinimumLevel(LogLevel.Debug);
 });
 
-var clientOptions = new AzureOpenAIClientOptions();
+var clientOptions = new OpenAIClientOptions();
 var loggingOptions = clientOptions.ClientLoggingOptions ?? new ClientLoggingOptions();
 clientOptions.ClientLoggingOptions = loggingOptions;
 loggingOptions.EnableLogging = traceAgent;
@@ -82,26 +78,28 @@ clientOptions.AddPolicy(new RawJsonLoggingPolicy(traceAgent), PipelinePosition.B
  * 
  * Scenario: A Travel Advisor system where:
  * - Main Agent: Friendly travel advisor that helps plan trips
- * - Specialist Agent: Location expert with access to real country and weather data
+ * - Specialist Agent: Location expert with access to real country, weather, and travel advisory data
  * 
- * The specialist agent uses real public APIs (REST Countries + Open-Meteo) to provide
- * accurate information, while the main agent focuses on conversational interaction.
+ * The specialist agent uses real public APIs (REST Countries, Open-Meteo, and GOV.UK Foreign 
+ * Travel Advice) to provide accurate information, while the main agent focuses on conversational 
+ * interaction.
  * 
  * Reference: https://learn.microsoft.com/en-us/agent-framework/tutorials/agents/agent-as-function-tool
+ * Example run: Write-Output "What is the weather in Vietnam?" | dotnet run .\demo2.cs -- --show-raw --trace
+ * Example run: Write-Output "What should i be careful of in Vietnam?" | dotnet run .\demo2.cs -- --show-raw --trace
  */
 
 AnsiConsole.Write(new FigletText("Travel Advisor").Color(Color.Blue));
 AnsiConsole.WriteLine();
 
-var azureOpenAIClient = new AzureOpenAIClient(
-    new Uri(AzureAIFoundry_GPT41_Endpoint),
-    new ApiKeyCredential(AzureAIFoundry_GPT41_APIKey),
+var openAIClient = new OpenAIClient(
+    new ApiKeyCredential(OPENAI_API_KEY),
     clientOptions);
 
 // Create the specialist agent that has access to real-world location data
 // This agent is an expert in geography, weather, and travel conditions
-AIAgent locationExpertAgent = azureOpenAIClient
-    .GetChatClient("gpt-4.1")
+AIAgent locationExpertAgent = openAIClient
+    .GetChatClient(CHAT_MODEL_ID)
     .CreateAIAgent(
         instructions: @"
             You are a location expert. 
@@ -116,8 +114,8 @@ AnsiConsole.MarkupLine("[cyan]✅ Location Expert Agent created with access to c
 
 // Create the main travel advisor agent that uses the specialist agent as a tool
 // This demonstrates the agent-as-function-tool pattern
-AIAgent travelAdvisorAgent = azureOpenAIClient
-    .GetChatClient("gpt-4.1")
+AIAgent travelAdvisorAgent = openAIClient
+    .GetChatClient(CHAT_MODEL_ID)
     .CreateAIAgent(
         instructions: @"
             You are a friendly and enthusiastic travel advisor. When users ask about specific countries or travel destinations, 
@@ -349,15 +347,6 @@ static async Task<string> GetLocationInfo([Description("The name of the country 
     bool traceAgent = System.Array.Exists(commandLineArgs,
         a => string.Equals(a, "--trace", System.StringComparison.OrdinalIgnoreCase));
     
-    void PrintPrettyJson(JsonDocument doc)
-    {
-        using var stream = new MemoryStream();
-        using var writer = new Utf8JsonWriter(stream, new JsonWriterOptions { Indented = true });
-        doc.WriteTo(writer);
-        writer.Flush();
-        AnsiConsole.WriteLine(Encoding.UTF8.GetString(stream.ToArray()));
-    }
-
     try
     {
         AnsiConsole.MarkupLine($"[yellow bold]📡 LocationExpert Agent: Fetching data for {countryName}[/]");
@@ -387,12 +376,6 @@ static async Task<string> GetLocationInfo([Description("The name of the country 
         using var countryDoc = JsonDocument.Parse(countryResponseText);
 
         AnsiConsole.MarkupLine($"[yellow]   ✓ Received country data[/]");
-        if (showRaw)
-        {
-            AnsiConsole.MarkupLine("[dim yellow]     Raw REST Countries response JSON:[/]");
-            PrintPrettyJson(countryDoc);
-            AnsiConsole.WriteLine();
-        }
 
         if (countryDoc.RootElement.GetArrayLength() == 0)
         {
@@ -401,48 +384,20 @@ static async Task<string> GetLocationInfo([Description("The name of the country 
 
         var country = countryDoc.RootElement[0];
 
-        // Extract key information
+        // Extract key information needed for subsequent API calls
         var officialName = country.GetProperty("name").GetProperty("official").GetString();
         var capital = country.GetProperty("capital")[0].GetString();
-        var population = country.GetProperty("population").GetInt64();
-        var region = country.GetProperty("region").GetString();
-        var subregion = country.GetProperty("subregion").GetString();
 
-        // Get coordinates for the capital city
+        // Get coordinates for the capital city (needed for weather API)
         var capitalInfo = country.GetProperty("capitalInfo");
         var latlng = capitalInfo.GetProperty("latlng");
         var latitude = latlng[0].GetDouble();
         var longitude = latlng[1].GetDouble();
 
-        // Get currencies
-        var currencies = new List<string>();
-        if (country.TryGetProperty("currencies", out var currenciesObj))
-        {
-            foreach (var currency in currenciesObj.EnumerateObject())
-            {
-                currencies.Add($"{currency.Value.GetProperty("name").GetString()} ({currency.Value.GetProperty("symbol").GetString()})");
-            }
-        }
-
-        // Get languages
-        var languages = new List<string>();
-        if (country.TryGetProperty("languages", out var languagesObj))
-        {
-            foreach (var language in languagesObj.EnumerateObject())
-            {
-                languages.Add(language.Value.GetString()!);
-            }
-        }
-
         // --------------------------------------------------------------------
         // 2) GOV.UK Foreign Travel Advice - live travel advisories
         // --------------------------------------------------------------------
 
-        string? travelAdviceSource = null;
-        string? travelAdviceUpdatedAt = null;
-        string? travelAdviceLatestChange = null;
-        var travelAdviceRecentChanges = new List<(string Date, string Summary)>();
-        var travelAdviceParts = new List<(string Title, string Body)>();
         string? adviceResponseText = null;
 
         try
@@ -457,12 +412,6 @@ static async Task<string> GetLocationInfo([Description("The name of the country 
             var adviceIndexRoot = adviceIndexDoc.RootElement;
 
             AnsiConsole.MarkupLine("[yellow]   ✓ Received travel advice index data[/]");
-            if (showRaw)
-            {
-                AnsiConsole.MarkupLine("[dim yellow]     Raw GOV.UK index response JSON:[/]");
-                PrintPrettyJson(adviceIndexDoc);
-                AnsiConsole.WriteLine();
-            }
 
             JsonElement children;
             if (adviceIndexRoot.TryGetProperty("links", out var linksElement) &&
@@ -539,94 +488,8 @@ static async Task<string> GetLocationInfo([Description("The name of the country 
                     AnsiConsole.MarkupLine($"[dim yellow]     URL: {adviceUrl}[/]");
 
                     adviceResponseText = await httpClient.GetStringAsync(adviceUrl);
-                    using var adviceDoc = JsonDocument.Parse(adviceResponseText);
-                    var adviceRoot = adviceDoc.RootElement;
-
+                    
                     AnsiConsole.MarkupLine("[yellow]   ✓ Received travel advice detail data[/]");
-                    if (showRaw)
-                    {
-                        AnsiConsole.MarkupLine("[dim yellow]     Raw GOV.UK detail response JSON:[/]");
-                        PrintPrettyJson(adviceDoc);
-                        AnsiConsole.WriteLine();
-                    }
-
-                    travelAdviceSource = "UK Foreign, Commonwealth & Development Office (FCDO) travel advice";
-
-                    if (adviceRoot.TryGetProperty("updated_at", out var updatedAtElement) &&
-                        updatedAtElement.ValueKind == JsonValueKind.String)
-                    {
-                        var updatedAtRaw = updatedAtElement.GetString();
-                        if (!string.IsNullOrWhiteSpace(updatedAtRaw))
-                        {
-                            travelAdviceUpdatedAt = updatedAtRaw;
-                        }
-                    }
-
-                    if (adviceRoot.TryGetProperty("details", out var detailsRoot))
-                    {
-                        if (detailsRoot.TryGetProperty("change_description", out var changeDescElement) &&
-                            changeDescElement.ValueKind == JsonValueKind.String)
-                        {
-                            travelAdviceLatestChange = changeDescElement.GetString();
-                        }
-
-                        if (detailsRoot.TryGetProperty("change_history", out var historyElement) &&
-                            historyElement.ValueKind == JsonValueKind.Array)
-                        {
-                            int count = 0;
-                            foreach (var entry in historyElement.EnumerateArray())
-                            {
-                                if (count >= 3)
-                                {
-                                    break;
-                                }
-
-                                if (!entry.TryGetProperty("note", out var noteElement) ||
-                                    noteElement.ValueKind != JsonValueKind.String)
-                                {
-                                    continue;
-                                }
-
-                                var note = noteElement.GetString() ?? string.Empty;
-                                string dateString = string.Empty;
-
-                                if (entry.TryGetProperty("public_timestamp", out var tsElement) &&
-                                    tsElement.ValueKind == JsonValueKind.String)
-                                {
-                                    var tsRaw = tsElement.GetString();
-                                    if (!string.IsNullOrWhiteSpace(tsRaw) &&
-                                        DateTime.TryParse(tsRaw, CultureInfo.InvariantCulture, DateTimeStyles.AdjustToUniversal, out var dt))
-                                    {
-                                        dateString = dt.ToString("yyyy-MM-dd HH:mm 'UTC'", CultureInfo.InvariantCulture);
-                                    }
-                                    else if (!string.IsNullOrWhiteSpace(tsRaw))
-                                    {
-                                        dateString = tsRaw;
-                                    }
-                                }
-
-                                travelAdviceRecentChanges.Add((string.IsNullOrEmpty(dateString) ? string.Empty : dateString, note));
-                                count++;
-                            }
-                        }
-
-                        if (detailsRoot.TryGetProperty("parts", out var partsElement) &&
-                            partsElement.ValueKind == JsonValueKind.Array)
-                        {
-                            foreach (var part in partsElement.EnumerateArray())
-                            {
-                                var title = part.GetProperty("title").GetString() ?? "";
-                                var body = part.GetProperty("body").GetString() ?? "";
-                                // Strip HTML
-                                body = Regex.Replace(body, "<.*?>", " ");
-                                body = WebUtility.HtmlDecode(body);
-                                // Normalize whitespace
-                                body = Regex.Replace(body, "\\s+", " ").Trim();
-                                
-                                travelAdviceParts.Add((title, body));
-                            }
-                        }
-                    }
                 }
                 else
                 {
@@ -661,192 +524,14 @@ static async Task<string> GetLocationInfo([Description("The name of the country 
         var weatherUrl = $"https://api.open-meteo.com/v1/forecast?latitude={latitude.ToString(CultureInfo.InvariantCulture)}&longitude={longitude.ToString(CultureInfo.InvariantCulture)}&current=temperature_2m,relative_humidity_2m,apparent_temperature,precipitation,weather_code,wind_speed_10m&timezone=auto";
 
         var weatherResponseText = await httpClient.GetStringAsync(weatherUrl);
-        using var weatherDoc = JsonDocument.Parse(weatherResponseText);
-        var weatherResponse = weatherDoc.RootElement;
 
         AnsiConsole.WriteLine();
         AnsiConsole.MarkupLine($"[yellow]   ✓ Received weather data[/]");
-        if (showRaw)
-        {
-            AnsiConsole.MarkupLine("[dim yellow]     Raw Open-Meteo response JSON:[/]");
-            PrintPrettyJson(weatherDoc);
-            AnsiConsole.WriteLine();
-        }
 
-        // Parse weather data in a robust way
-        // The Open-Meteo API may return either a single object or
-        // an array of location objects. Handle both shapes.
-        if (weatherResponse.ValueKind == JsonValueKind.Array)
-        {
-            if (weatherResponse.GetArrayLength() == 0)
-            {
-                AnsiConsole.MarkupLine("[red]   ✗ Weather API returned an empty array[/]");
-                AnsiConsole.WriteLine($"   Weather response: {weatherResponse.GetRawText()}");
-                throw new InvalidOperationException("Weather API returned an empty array.");
-            }
-
-            weatherResponse = weatherResponse[0];
-        }
-        else if (weatherResponse.ValueKind != JsonValueKind.Object)
-        {
-            AnsiConsole.MarkupLine("[red]   ✗ Unexpected weather API response format (root is not an object or array)[/]");
-            AnsiConsole.WriteLine($"   Weather response: {weatherResponse.GetRawText()}");
-            throw new InvalidOperationException("Unexpected weather API response format.");
-        }
-
-        // Optional metadata used for nicer formatting
-        string? timezone = null;
-        string? timezoneAbbreviation = null;
-        if (weatherResponse.TryGetProperty("timezone", out var tzElement))
-        {
-            timezone = tzElement.GetString();
-        }
-        if (weatherResponse.TryGetProperty("timezone_abbreviation", out var tzAbbrevElement))
-        {
-            timezoneAbbreviation = tzAbbrevElement.GetString();
-        }
-
-        if (!weatherResponse.TryGetProperty("current", out var currentElement))
-        {
-            AnsiConsole.MarkupLine("[red]   ✗ Weather API response does not contain 'current' property[/]");
-            AnsiConsole.WriteLine($"   Weather response: {weatherResponse.GetRawText()}");
-            throw new InvalidOperationException("Weather API response missing 'current' property.");
-        }
-
-        JsonElement current = currentElement;
-        if (current.ValueKind == JsonValueKind.Array)
-        {
-            if (current.GetArrayLength() == 0)
-            {
-                AnsiConsole.MarkupLine("[red]   ✗ Weather API 'current' array is empty[/]");
-                AnsiConsole.WriteLine($"   Weather response: {weatherResponse.GetRawText()}");
-                throw new InvalidOperationException("Weather API 'current' array is empty.");
-            }
-
-            current = current[0];
-        }
-
-        if (current.ValueKind != JsonValueKind.Object)
-        {
-            AnsiConsole.MarkupLine("[red]   ✗ Weather API 'current' value is not an object[/]");
-            AnsiConsole.WriteLine($"   Weather response: {weatherResponse.GetRawText()}");
-            throw new InvalidOperationException("Weather API 'current' value is not an object.");
-        }
-
-        var temperature = current.GetProperty("temperature_2m").GetDouble();
-        var feelsLike = current.GetProperty("apparent_temperature").GetDouble();
-        var humidity = current.GetProperty("relative_humidity_2m").GetInt32();
-        var windSpeed = current.GetProperty("wind_speed_10m").GetDouble();
-        var precipitation = current.GetProperty("precipitation").GetDouble();
-
-        // Build comprehensive response JSON without reflection-based serialization
+        // Build response JSON with raw API responses only (no duplication)
         using var stream = new MemoryStream();
         using (var writer = new Utf8JsonWriter(stream, new JsonWriterOptions { Indented = true }))
         {
-            writer.WriteStartObject();
-
-            writer.WriteString("country", officialName);
-            writer.WriteString("capital", capital);
-            writer.WriteString("region", $"{region} - {subregion}");
-            writer.WriteString("population", population.ToString("N0", CultureInfo.InvariantCulture));
-            writer.WriteString("currencies", string.Join(", ", currencies));
-            writer.WriteString("languages", string.Join(", ", languages));
-
-            writer.WritePropertyName("coordinates");
-            writer.WriteStartObject();
-            writer.WriteNumber("latitude", latitude);
-            writer.WriteNumber("longitude", longitude);
-            writer.WriteEndObject();
-
-            writer.WritePropertyName("weather");
-            writer.WriteStartObject();
-
-            // Rounded, consistently formatted values
-            var roundedTemp = Math.Round(temperature, 1);
-            var roundedFeelsLike = Math.Round(feelsLike, 1);
-            var roundedWind = Math.Round(windSpeed, 1);
-            var roundedPrecip = Math.Round(precipitation, 1);
-
-            writer.WriteString("temperature", $"{roundedTemp}°C");
-            writer.WriteString("feels_like", $"{roundedFeelsLike}°C");
-            writer.WriteString("humidity", $"{humidity}%");
-            writer.WriteString("wind_speed", $"{roundedWind} km/h");
-            writer.WriteString("precipitation", $"{roundedPrecip} mm");
-            writer.WriteString("conditions", GetWeatherDescription(current.GetProperty("weather_code").GetInt32()));
-
-            if (!string.IsNullOrEmpty(timezone))
-            {
-                writer.WriteString("timezone", timezone);
-            }
-
-            if (!string.IsNullOrEmpty(timezoneAbbreviation))
-            {
-                writer.WriteString("timezone_abbreviation", timezoneAbbreviation);
-            }
-
-            writer.WriteEndObject();
-
-            // Optional: travel advisories from GOV.UK FCDO
-            if (!string.IsNullOrEmpty(travelAdviceLatestChange) ||
-                !string.IsNullOrEmpty(travelAdviceUpdatedAt) ||
-                travelAdviceRecentChanges.Count > 0)
-            {
-                writer.WritePropertyName("travel_advisories");
-                writer.WriteStartObject();
-
-                if (!string.IsNullOrEmpty(travelAdviceSource))
-                {
-                    writer.WriteString("source", travelAdviceSource);
-                }
-
-                if (!string.IsNullOrEmpty(travelAdviceUpdatedAt))
-                {
-                    writer.WriteString("updated_at", travelAdviceUpdatedAt);
-                }
-
-                if (!string.IsNullOrEmpty(travelAdviceLatestChange))
-                {
-                    writer.WriteString("latest_change", travelAdviceLatestChange);
-                }
-
-                if (travelAdviceRecentChanges.Count > 0)
-                {
-                    writer.WritePropertyName("recent_changes");
-                    writer.WriteStartArray();
-
-                    foreach (var change in travelAdviceRecentChanges)
-                    {
-                        writer.WriteStartObject();
-                        if (!string.IsNullOrEmpty(change.Date))
-                        {
-                            writer.WriteString("date", change.Date);
-                        }
-                        writer.WriteString("summary", change.Summary);
-                        writer.WriteEndObject();
-                    }
-
-                    writer.WriteEndArray();
-                }
-
-                if (travelAdviceParts.Count > 0)
-                {
-                    writer.WritePropertyName("detailed_advice");
-                    writer.WriteStartArray();
-                    foreach (var part in travelAdviceParts)
-                    {
-                        writer.WriteStartObject();
-                        writer.WriteString("title", part.Title);
-                        writer.WriteString("details", part.Body);
-                        writer.WriteEndObject();
-                    }
-                    writer.WriteEndArray();
-                }
-
-                writer.WriteEndObject();
-            }
-
-            // Add raw API responses
-            writer.WritePropertyName("raw_api_responses");
             writer.WriteStartObject();
             
             writer.WritePropertyName("rest_countries");
@@ -857,11 +542,9 @@ static async Task<string> GetLocationInfo([Description("The name of the country 
 
             if (!string.IsNullOrEmpty(adviceResponseText))
             {
-                writer.WritePropertyName("gov_uk_detail");
+                writer.WritePropertyName("gov_uk_travel_advice");
                 writer.WriteRawValue(adviceResponseText);
             }
-            
-            writer.WriteEndObject();
 
             writer.WriteEndObject();
         }
@@ -869,40 +552,10 @@ static async Task<string> GetLocationInfo([Description("The name of the country 
 
         if (traceAgent)
         {
-            try
-            {
-                using var doc = JsonDocument.Parse(payload);
-                var root = doc.RootElement;
-
-                string? countryOut = root.TryGetProperty("country", out var cOut) ? cOut.GetString() : null;
-                string? capitalOut = root.TryGetProperty("capital", out var capOut) ? capOut.GetString() : null;
-                string? tempOut = null;
-                string? condOut = null;
-
-                if (root.TryGetProperty("weather", out var weatherOut) && weatherOut.ValueKind == JsonValueKind.Object)
-                {
-                    if (weatherOut.TryGetProperty("temperature", out var tOut))
-                    {
-                        tempOut = tOut.GetString();
-                    }
-                    if (weatherOut.TryGetProperty("conditions", out var condOutEl))
-                    {
-                        condOut = condOutEl.GetString();
-                    }
-                }
-
-                AnsiConsole.MarkupLine("[dim yellow]   (Tool exit) LocationExpert is returning summarized JSON back to the main agent:[/]");
-                AnsiConsole.MarkupLine($"[dim yellow]     Country: {countryOut ?? "(unknown)"}, Capital: {capitalOut ?? "(unknown)"}[/]");
-                if (!string.IsNullOrEmpty(tempOut) || !string.IsNullOrEmpty(condOut))
-                {
-                    AnsiConsole.MarkupLine($"[dim yellow]     Weather: {tempOut ?? "(n/a)"}, Conditions: {condOut ?? "(n/a)"}[/]");
-                }
-                AnsiConsole.WriteLine();
-            }
-            catch
-            {
-                // If we somehow fail here, just skip the extra summary.
-            }
+            AnsiConsole.MarkupLine("[dim yellow]   (Tool exit) LocationExpert is returning raw API JSON to the agent:[/]");
+            AnsiConsole.MarkupLine($"[dim yellow]     Payload contains: rest_countries, open_meteo{(adviceResponseText != null ? ", gov_uk_travel_advice" : "")}[/]");
+            AnsiConsole.MarkupLine($"[dim yellow]     Total size: {payload.Length:N0} characters[/]");
+            AnsiConsole.WriteLine();
         }
 
         if (showRaw)
@@ -924,22 +577,7 @@ static async Task<string> GetLocationInfo([Description("The name of the country 
     }
 }
 
-// Helper to convert weather codes to descriptions
-static string GetWeatherDescription(int code)
-{
-    return code switch
-    {
-        0 => "Clear sky",
-        1 or 2 or 3 => "Partly cloudy",
-        45 or 48 => "Foggy",
-        51 or 53 or 55 => "Drizzle",
-        61 or 63 or 65 => "Rain",
-        71 or 73 or 75 => "Snow",
-        80 or 81 or 82 => "Rain showers",
-        95 or 96 or 99 => "Thunderstorm",
-        _ => "Variable conditions"
-    };
-}
+
 
 // Custom pipeline policy that logs the raw HTTP JSON request and response
 // bodies going to and from Azure OpenAI in a nicely formatted way.
