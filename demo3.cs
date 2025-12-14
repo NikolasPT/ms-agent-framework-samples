@@ -484,6 +484,7 @@ class OrchestratorAgentManager : RoundRobinGroupChatManager
     private readonly AIAgent _orchestrator;          // The LLM agent that decides who speaks next
     private readonly IReadOnlyList<AIAgent> _agents; // All participant agents (Analyst, Coder, Reviewer)
     private readonly Dictionary<string, AIAgent> _agentsByName; // Quick lookup by name
+    private bool _terminateNextRound = false; // Flag to force termination if LLM decides so
 
     /// <summary>
     /// Creates a new orchestrator manager that uses an LLM agent for speaker selection.
@@ -566,6 +567,7 @@ class OrchestratorAgentManager : RoundRobinGroupChatManager
         // We just need to return some agent - it won't run because termination will trigger.
         if (decision.Contains("TERMINATE", StringComparison.OrdinalIgnoreCase))
         {
+            _terminateNextRound = true;
             return _agents[0];
         }
 
@@ -669,6 +671,11 @@ class OrchestratorAgentManager : RoundRobinGroupChatManager
     /// </remarks>
     protected override ValueTask<bool> ShouldTerminateAsync(IReadOnlyList<ChatMessage> history, CancellationToken ct = default)
     {
+        if (_terminateNextRound)
+        {
+            return ValueTask.FromResult(true);
+        }
+
         var last = history.LastOrDefault();
         
         // Only check for termination when the Reviewer just spoke
@@ -705,9 +712,10 @@ class OrchestratorAgentManager : RoundRobinGroupChatManager
                 text.Contains("MERGE APPROVED", StringComparison.OrdinalIgnoreCase) ||
                 // Regex: Match "APPROVED" at sentence start or after punctuation
                 // This catches "APPROVED." or "APPROVED!" but not "NOT APPROVED"
+                // Also allows colon (:) for cases like "Reviewer: APPROVED"
                 Regex.IsMatch(
                     text, 
-                    @"(?:^|\.\s*|\n\s*)APPROVED(?:\s|!|\.|$)",
+                    @"(?:^|[\.\:!]\s*|\n\s*)APPROVED(?:\s|!|\.|$)",
                     RegexOptions.IgnoreCase);
             
             if (hasExplicitApproval)
