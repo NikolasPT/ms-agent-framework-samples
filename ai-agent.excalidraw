@@ -236,8 +236,8 @@
         "type": 2
       },
       "seed": 1611841043,
-      "version": 300,
-      "versionNonce": 1791407059,
+      "version": 302,
+      "versionNonce": 1553952483,
       "isDeleted": false,
       "boundElements": [
         {
@@ -245,15 +245,15 @@
           "id": "d8vsyPJizYEcJC9FMeJ35"
         }
       ],
-      "updated": 1765808248038,
+      "updated": 1765879593872,
       "link": null,
       "locked": false
     },
     {
       "id": "d8vsyPJizYEcJC9FMeJ35",
       "type": "text",
-      "x": 677.2469428811935,
-      "y": 666.9479617995717,
+      "x": 677.2469428811936,
+      "y": 666.9479617995718,
       "width": 54.699981689453125,
       "height": 25,
       "angle": 0,
@@ -269,11 +269,11 @@
       "index": "aD",
       "roundness": null,
       "seed": 1507296179,
-      "version": 209,
-      "versionNonce": 1110274611,
+      "version": 212,
+      "versionNonce": 1496685187,
       "isDeleted": false,
       "boundElements": [],
-      "updated": 1765808248038,
+      "updated": 1765879593873,
       "link": null,
       "locked": false,
       "text": "Tools",
