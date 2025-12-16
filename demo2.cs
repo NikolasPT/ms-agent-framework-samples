@@ -21,8 +21,6 @@ using Microsoft.Extensions.AI;
 using OpenAI;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
-using System.Text.RegularExpressions;
-using System.Net;
 
 // Load secrets using the same ID you used in the CLI
 var config = new ConfigurationBuilder()
@@ -110,8 +108,6 @@ AIAgent locationExpertAgent = openAIClient
         description: "Provides real-time country information, current weather data, and official travel advisories by calling external APIs.",
         tools: [AIFunctionFactory.Create(GetLocationInfo)]);
 
-AnsiConsole.MarkupLine("[cyan]✅ Location Expert Agent created with access to country and weather data[/]");
-
 // Create the main travel advisor agent that uses the specialist agent as a tool
 // This demonstrates the agent-as-function-tool pattern
 AIAgent travelAdvisorAgent = openAIClient
@@ -125,9 +121,6 @@ AIAgent travelAdvisorAgent = openAIClient
             based on the current weather and the latest official travel advisories.",
             
         tools: [locationExpertAgent.AsAIFunction()]); // Convert the specialist agent to a function tool
-
-AnsiConsole.MarkupLine("[cyan]✅ Travel Advisor Agent created with LocationExpert as a tool[/]");
-AnsiConsole.WriteLine();
 
 if (traceAgent)
 {
@@ -284,7 +277,7 @@ await foreach (var update in travelAdvisorAgent.RunStreamingAsync(prompt))
                     }
                     catch
                     {
-                        // If parsing fails, just skip the structured summary and fall back to raw panel below
+                        
                     }
                 }
 				
@@ -342,21 +335,19 @@ static async Task<string> GetLocationInfo([Description("The name of the country 
 {
     using var httpClient = new HttpClient();
     var commandLineArgs = Environment.GetCommandLineArgs();
-    bool showRaw = System.Array.Exists(commandLineArgs,
-        a => string.Equals(a, "--show-raw", System.StringComparison.OrdinalIgnoreCase));
-    bool traceAgent = System.Array.Exists(commandLineArgs,
-        a => string.Equals(a, "--trace", System.StringComparison.OrdinalIgnoreCase));
+    bool showRaw = Array.Exists(commandLineArgs,
+        a => string.Equals(a, "--show-raw", StringComparison.OrdinalIgnoreCase));
+    bool traceAgent = Array.Exists(commandLineArgs,
+        a => string.Equals(a, "--trace", StringComparison.OrdinalIgnoreCase));
     
-    try
-    {
-        AnsiConsole.MarkupLine($"[yellow bold]📡 LocationExpert Agent: Fetching data for {countryName}[/]");
-        AnsiConsole.WriteLine();
+    AnsiConsole.MarkupLine($"[yellow bold]📡 LocationExpert Agent: Fetching data for {countryName}[/]");
+    AnsiConsole.WriteLine();
 
-        if (traceAgent)
-        {
-            AnsiConsole.MarkupLine("[dim yellow]   (Tool entry) Main agent has invoked GetLocationInfo; starting external API calls...[/]");
-            AnsiConsole.WriteLine();
-        }
+    if (traceAgent)
+    {
+        AnsiConsole.MarkupLine("[dim yellow]   (Tool entry) Main agent has invoked GetLocationInfo; starting external API calls...[/]");
+        AnsiConsole.WriteLine();
+    }
 
         // --------------------------------------------------------------------
         // 1) REST Countries API - static reference data
@@ -400,111 +391,103 @@ static async Task<string> GetLocationInfo([Description("The name of the country 
 
         string? adviceResponseText = null;
 
-        try
+        AnsiConsole.MarkupLine("[yellow]   → API Call: GOV.UK Foreign Travel Advice index[/]");
+
+        var adviceIndexUrl = "https://www.gov.uk/api/content/foreign-travel-advice";
+        AnsiConsole.MarkupLine($"[dim yellow]     URL: {adviceIndexUrl}[/]");
+
+        var adviceIndexResponseText = await httpClient.GetStringAsync(adviceIndexUrl);
+        using var adviceIndexDoc = JsonDocument.Parse(adviceIndexResponseText);
+        var adviceIndexRoot = adviceIndexDoc.RootElement;
+
+        AnsiConsole.MarkupLine("[yellow]   ✓ Received travel advice index data[/]");
+
+        JsonElement children;
+        if (adviceIndexRoot.TryGetProperty("links", out var linksElement) &&
+            linksElement.TryGetProperty("children", out children) &&
+            children.ValueKind == JsonValueKind.Array)
         {
-            AnsiConsole.MarkupLine("[yellow]   → API Call: GOV.UK Foreign Travel Advice index[/]");
+            string normalizedInput = countryName.Trim().ToLowerInvariant();
+            string normalizedOfficial = (officialName ?? string.Empty).Trim().ToLowerInvariant();
 
-            var adviceIndexUrl = "https://www.gov.uk/api/content/foreign-travel-advice";
-            AnsiConsole.MarkupLine($"[dim yellow]     URL: {adviceIndexUrl}[/]");
+            string? matchedSlug = null;
+            string? matchedCountryName = null;
 
-            var adviceIndexResponseText = await httpClient.GetStringAsync(adviceIndexUrl);
-            using var adviceIndexDoc = JsonDocument.Parse(adviceIndexResponseText);
-            var adviceIndexRoot = adviceIndexDoc.RootElement;
-
-            AnsiConsole.MarkupLine("[yellow]   ✓ Received travel advice index data[/]");
-
-            JsonElement children;
-            if (adviceIndexRoot.TryGetProperty("links", out var linksElement) &&
-                linksElement.TryGetProperty("children", out children) &&
-                children.ValueKind == JsonValueKind.Array)
+            foreach (var child in children.EnumerateArray())
             {
-                string normalizedInput = countryName.Trim().ToLowerInvariant();
-                string normalizedOfficial = (officialName ?? string.Empty).Trim().ToLowerInvariant();
-
-                string? matchedSlug = null;
-                string? matchedCountryName = null;
-
-                foreach (var child in children.EnumerateArray())
+                if (!child.TryGetProperty("details", out var detailsElement))
                 {
-                    if (!child.TryGetProperty("details", out var detailsElement))
+                    continue;
+                }
+
+                if (!detailsElement.TryGetProperty("country", out var countryElement))
+                {
+                    continue;
+                }
+
+                if (!countryElement.TryGetProperty("name", out var nameElement) ||
+                    !countryElement.TryGetProperty("slug", out var slugElement))
+                {
+                    continue;
+                }
+
+                var govCountryName = nameElement.GetString() ?? string.Empty;
+                var govSlug = slugElement.GetString() ?? string.Empty;
+                var govCountryNameNorm = govCountryName.Trim().ToLowerInvariant();
+                var govSlugNorm = govSlug.Trim().ToLowerInvariant();
+
+                bool isMatch = normalizedInput == govCountryNameNorm ||
+                               normalizedOfficial == govCountryNameNorm ||
+                               normalizedInput == govSlugNorm ||
+                               normalizedOfficial == govSlugNorm;
+
+                if (!isMatch && countryElement.TryGetProperty("synonyms", out var synonymsElement) &&
+                    synonymsElement.ValueKind == JsonValueKind.Array)
+                {
+                    foreach (var syn in synonymsElement.EnumerateArray())
                     {
-                        continue;
-                    }
-
-                    if (!detailsElement.TryGetProperty("country", out var countryElement))
-                    {
-                        continue;
-                    }
-
-                    if (!countryElement.TryGetProperty("name", out var nameElement) ||
-                        !countryElement.TryGetProperty("slug", out var slugElement))
-                    {
-                        continue;
-                    }
-
-                    var govCountryName = nameElement.GetString() ?? string.Empty;
-                    var govSlug = slugElement.GetString() ?? string.Empty;
-                    var govCountryNameNorm = govCountryName.Trim().ToLowerInvariant();
-                    var govSlugNorm = govSlug.Trim().ToLowerInvariant();
-
-                    bool isMatch = normalizedInput == govCountryNameNorm ||
-                                   normalizedOfficial == govCountryNameNorm ||
-                                   normalizedInput == govSlugNorm ||
-                                   normalizedOfficial == govSlugNorm;
-
-                    if (!isMatch && countryElement.TryGetProperty("synonyms", out var synonymsElement) &&
-                        synonymsElement.ValueKind == JsonValueKind.Array)
-                    {
-                        foreach (var syn in synonymsElement.EnumerateArray())
+                        var synValue = syn.GetString();
+                        if (string.IsNullOrWhiteSpace(synValue))
                         {
-                            var synValue = syn.GetString();
-                            if (string.IsNullOrWhiteSpace(synValue))
-                            {
-                                continue;
-                            }
+                            continue;
+                        }
 
-                            var synNorm = synValue.Trim().ToLowerInvariant();
-                            if (normalizedInput == synNorm || normalizedOfficial == synNorm)
-                            {
-                                isMatch = true;
-                                break;
-                            }
+                        var synNorm = synValue.Trim().ToLowerInvariant();
+                        if (normalizedInput == synNorm || normalizedOfficial == synNorm)
+                        {
+                            isMatch = true;
+                            break;
                         }
                     }
-
-                    if (isMatch)
-                    {
-                        matchedSlug = govSlug;
-                        matchedCountryName = govCountryName;
-                        break;
-                    }
                 }
 
-                if (!string.IsNullOrWhiteSpace(matchedSlug))
+                if (isMatch)
                 {
-                    var adviceUrl = $"https://www.gov.uk/api/content/foreign-travel-advice/{matchedSlug}";
-                    AnsiConsole.MarkupLine("[yellow]   → API Call: GOV.UK Foreign Travel Advice detail[/]");
-                    AnsiConsole.MarkupLine($"[dim yellow]     matched country = {matchedCountryName} (slug: {matchedSlug})[/]");
-                    AnsiConsole.MarkupLine($"[dim yellow]     URL: {adviceUrl}[/]");
+                    matchedSlug = govSlug;
+                    matchedCountryName = govCountryName;
+                    break;
+                }
+            }
 
-                    adviceResponseText = await httpClient.GetStringAsync(adviceUrl);
-                    
-                    AnsiConsole.MarkupLine("[yellow]   ✓ Received travel advice detail data[/]");
-                }
-                else
-                {
-                    AnsiConsole.MarkupLine("[yellow]   → No matching GOV.UK travel advice entry found for this country; skipping advisories.[/]");
-                }
+            if (!string.IsNullOrWhiteSpace(matchedSlug))
+            {
+                var adviceUrl = $"https://www.gov.uk/api/content/foreign-travel-advice/{matchedSlug}";
+                AnsiConsole.MarkupLine("[yellow]   → API Call: GOV.UK Foreign Travel Advice detail[/]");
+                AnsiConsole.MarkupLine($"[dim yellow]     matched country = {matchedCountryName} (slug: {matchedSlug})[/]");
+                AnsiConsole.MarkupLine($"[dim yellow]     URL: {adviceUrl}[/]");
+
+                adviceResponseText = await httpClient.GetStringAsync(adviceUrl);
+                
+                AnsiConsole.MarkupLine("[yellow]   ✓ Received travel advice detail data[/]");
             }
             else
             {
-                AnsiConsole.MarkupLine("[yellow]   → GOV.UK travel advice index did not contain a 'children' list; skipping advisories.[/]");
+                AnsiConsole.MarkupLine("[yellow]   → No matching GOV.UK travel advice entry found for this country; skipping advisories.[/]");
             }
         }
-        catch (Exception exAdvice)
+        else
         {
-            AnsiConsole.MarkupLine($"[yellow]   → Warning: Failed to fetch or parse GOV.UK travel advice: {exAdvice.Message}[/]");
-            AnsiConsole.WriteLine($"   Stack trace: {exAdvice.StackTrace}");
+            AnsiConsole.MarkupLine("[yellow]   → GOV.UK travel advice index did not contain a 'children' list; skipping advisories.[/]");
         }
 
         // --------------------------------------------------------------------
@@ -525,8 +508,8 @@ static async Task<string> GetLocationInfo([Description("The name of the country 
 
         var weatherResponseText = await httpClient.GetStringAsync(weatherUrl);
 
-        AnsiConsole.WriteLine();
         AnsiConsole.MarkupLine($"[yellow]   ✓ Received weather data[/]");
+        AnsiConsole.WriteLine();
 
         // Build response JSON with raw API responses only (no duplication)
         using var stream = new MemoryStream();
@@ -566,36 +549,21 @@ static async Task<string> GetLocationInfo([Description("The name of the country 
         }
 
         return payload;
-    }
-    catch (Exception ex)
-    {
-        AnsiConsole.MarkupLine($"[red]   ✗ ERROR: {ex.Message}[/]");
-        // Use plain WriteLine for stack trace and any raw JSON to avoid
-        // Spectre.Console markup parsing errors when arbitrary characters appear.
-        AnsiConsole.WriteLine($"   Stack trace: {ex.StackTrace}");
-        return $"Error fetching location data: {ex.Message}\n\nStack trace: {ex.StackTrace}";
-    }
 }
 
 
 
 // Custom pipeline policy that logs the raw HTTP JSON request and response
 // bodies going to and from Azure OpenAI in a nicely formatted way.
-sealed class RawJsonLoggingPolicy : PipelinePolicy
+sealed class RawJsonLoggingPolicy(bool enabled, int maxBytes = 1024 * 1024) : PipelinePolicy
 {
-    private readonly bool _enabled;
-    private readonly int _maxBytes;
-
-    public RawJsonLoggingPolicy(bool enabled, int maxBytes = 1024 * 1024)
-    {
-        _enabled = enabled;
-        _maxBytes = maxBytes;
-    }
+    private readonly bool _enabled = enabled;
+    private readonly int _maxBytes = maxBytes;
 
     public override void Process(PipelineMessage message, IReadOnlyList<PipelinePolicy> pipeline, int index)
     {
         // Synchronously wrap the async core implementation.
-        ProcessCoreAsync(message, pipeline, index, async: false).GetAwaiter().GetResult();
+        ProcessCoreAsync(message, pipeline, index, async: false).AsTask().GetAwaiter().GetResult();
     }
 
     public override async ValueTask ProcessAsync(PipelineMessage message, IReadOnlyList<PipelinePolicy> pipeline, int index)
@@ -633,18 +601,11 @@ sealed class RawJsonLoggingPolicy : PipelinePolicy
             }
 
             bool isSse = false;
-            try
+            if (response.Headers.TryGetValue("Content-Type", out var contentType) &&
+                contentType is not null &&
+                contentType.Contains("text/event-stream", StringComparison.OrdinalIgnoreCase))
             {
-                if (response.Headers.TryGetValue("Content-Type", out var contentType) &&
-                    contentType is not null &&
-                    contentType.Contains("text/event-stream", StringComparison.OrdinalIgnoreCase))
-                {
-                    isSse = true;
-                }
-            }
-            catch
-            {
-                // If header inspection fails, fall back to normal logging behavior.
+                isSse = true;
             }
 
             // For streaming (SSE) responses, do not buffer or log the body,
@@ -653,34 +614,20 @@ sealed class RawJsonLoggingPolicy : PipelinePolicy
             // the pretty-printed JSON body as before.
             if (!isSse)
             {
-                try
+                if (async)
                 {
-                    if (async)
-                    {
-                        await response.BufferContentAsync().ConfigureAwait(false);
-                    }
-                    else
-                    {
-                        response.BufferContent();
-                    }
+                    await response.BufferContentAsync().ConfigureAwait(false);
                 }
-                catch
+                else
                 {
-                    // If buffering fails, just skip logging the body.
+                    response.BufferContent();
                 }
 
                 LogResponse(response);
             }
             else
             {
-                try
-                {
-                    AnsiConsole.MarkupLine($"[dim]<< HTTP {response.Status} ({response.ReasonPhrase}) [streaming SSE, body not logged][/]");
-                }
-                catch
-                {
-                    // If logging fails, do not affect the response.
-                }
+                AnsiConsole.MarkupLine($"[dim]<< HTTP {response.Status} ({response.ReasonPhrase}) (streaming SSE, body not logged)[/]");
             }
         }
     }
@@ -689,124 +636,86 @@ sealed class RawJsonLoggingPolicy : PipelinePolicy
     {
         var request = message.Request;
 
-        try
+        var method = request.Method;
+        var uri = request.Uri;
+
+        AnsiConsole.MarkupLine($"[dim]>> HTTP {method} {uri}[/]");
+
+        var content = request.Content;
+        if (content is null)
         {
-            var method = request.Method;
-            var uri = request.Uri;
-
-            AnsiConsole.MarkupLine($"[dim]>> HTTP {method} {uri}[/]");
-
-            var content = request.Content;
-            if (content is null)
-            {
-                return;
-            }
-
-            using var ms = new MemoryStream();
-            content.WriteTo(ms);
-            var bytes = ms.ToArray();
-            if (bytes.Length == 0)
-            {
-                return;
-            }
-
-            if (bytes.Length > _maxBytes)
-            {
-                bytes = bytes.AsSpan(0, _maxBytes).ToArray();
-            }
-
-            var text = Encoding.UTF8.GetString(bytes);
-            var pretty = TryPrettyJson(text);
-
-            AnsiConsole.MarkupLine("[dim]>> Request Body:[/]");
-            AnsiConsole.WriteLine(pretty);
-            AnsiConsole.WriteLine();
+            return;
         }
-        catch
+
+        using var ms = new MemoryStream();
+        content.WriteTo(ms);
+        var bytes = ms.ToArray();
+        if (bytes.Length == 0)
         {
-            // If anything goes wrong while logging, do not affect the request.
+            return;
         }
+
+        if (bytes.Length > _maxBytes)
+        {
+            bytes = bytes.AsSpan(0, _maxBytes).ToArray();
+        }
+
+        var text = Encoding.UTF8.GetString(bytes);
+        var pretty = TryPrettyJson(text);
+
+        AnsiConsole.MarkupLine("[dim]>> Request Body:[/]");
+        AnsiConsole.WriteLine(pretty);
+        AnsiConsole.WriteLine();
     }
 
     private void LogResponse(PipelineResponse response)
     {
-        try
+        // For streaming responses (Server-Sent Events), the body consists of many
+        // "data: { ... }" chunks, which are already surfaced by the SDK's
+        // higher-level streaming APIs. To avoid overwhelming the console,
+        // skip logging those raw SSE frames here.
+        if (response.Headers.TryGetValue("Content-Type", out var contentType) &&
+            contentType is not null &&
+            contentType.Contains("text/event-stream", StringComparison.OrdinalIgnoreCase))
         {
-            // For streaming responses (Server-Sent Events), the body consists of many
-            // "data: { ... }" chunks, which are already surfaced by the SDK's
-            // higher-level streaming APIs. To avoid overwhelming the console,
-            // skip logging those raw SSE frames here.
-            try
-            {
-                if (response.Headers.TryGetValue("Content-Type", out var contentType) &&
-                    contentType is not null &&
-                    contentType.Contains("text/event-stream", StringComparison.OrdinalIgnoreCase))
-                {
-                    return;
-                }
-            }
-            catch
-            {
-                // If header inspection fails, fall through and attempt normal logging.
-            }
-
-            AnsiConsole.MarkupLine($"[dim]<< HTTP {response.Status} ({response.ReasonPhrase})[/]");
-
-            BinaryData contentData;
-            try
-            {
-                contentData = response.Content;
-            }
-            catch
-            {
-                // Response was not buffered; nothing to log.
-                return;
-            }
-
-            if (contentData is null)
-            {
-                return;
-            }
-
-            var text = contentData.ToString();
-            if (string.IsNullOrEmpty(text))
-            {
-                return;
-            }
-
-            if (text.Length > _maxBytes)
-            {
-                text = text.Substring(0, _maxBytes);
-            }
-
-            var pretty = TryPrettyJson(text);
-
-            AnsiConsole.MarkupLine("[dim]<< Response Body:[/]");
-            AnsiConsole.WriteLine(pretty);
-            AnsiConsole.WriteLine();
+            return;
         }
-        catch
+
+        AnsiConsole.MarkupLine($"[dim]<< HTTP {response.Status} ({response.ReasonPhrase})[/]");
+
+        var contentData = response.Content;
+
+        if (contentData is null)
         {
-            // If anything goes wrong while logging, do not affect the response.
+            return;
         }
+
+        var text = contentData.ToString();
+        if (string.IsNullOrEmpty(text))
+        {
+            return;
+        }
+
+        if (text.Length > _maxBytes)
+        {
+            text = text.Substring(0, _maxBytes);
+        }
+
+        var pretty = TryPrettyJson(text);
+
+        AnsiConsole.MarkupLine("[dim]<< Response Body:[/]");
+        AnsiConsole.WriteLine(pretty);
+        AnsiConsole.WriteLine();
     }
 
     private static string TryPrettyJson(string text)
     {
-        try
+        using var doc = JsonDocument.Parse(text);
+        using var ms = new MemoryStream();
+        using (var writer = new Utf8JsonWriter(ms, new JsonWriterOptions { Indented = true }))
         {
-            using var doc = JsonDocument.Parse(text);
-            using var ms = new MemoryStream();
-            using (var writer = new Utf8JsonWriter(ms, new JsonWriterOptions { Indented = true }))
-            {
-                doc.WriteTo(writer);
-            }
-            return Encoding.UTF8.GetString(ms.ToArray());
+            doc.WriteTo(writer);
         }
-        catch
-        {
-            // Not valid JSON; just return the original text.
-            return text;
-        }
+        return Encoding.UTF8.GetString(ms.ToArray());
     }
 }
