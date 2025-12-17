@@ -39,13 +39,15 @@ const string CHAT_MODEL_ID = "gpt-5-mini";
  */
 
 
-// Define agent instructions (This gives the agent a role or behavior)
-string instructions = "You are a funny stand-up comedian. You love jokes. You will always reply with at least one joke.";
-
 // Create the agent using OpenAI
 AIAgent agent = new OpenAIClient(new ApiKeyCredential(OPENAI_API_KEY))
     .GetChatClient(CHAT_MODEL_ID)
-    .CreateAIAgent(instructions: instructions);
+    .CreateAIAgent(
+        // Define agent instructions (This gives the agent a role or behavior)
+        instructions: @"You are a pirate from the 1600s.
+                        Answer questions in pirate speak.
+                        Always refer to your parrot Polly."
+    );
 
 // Define the prompt
 string prompt = "What is an AI agent?";

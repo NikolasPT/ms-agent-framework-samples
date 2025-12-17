@@ -33,12 +33,12 @@ const string CHAT_MODEL_ID = "gpt-5-mini";
 
 // Read command-line flags for optional tracing
 string[] commandLineArgs = Environment.GetCommandLineArgs();
-bool traceAgent = System.Array.Exists(commandLineArgs,
-    a => string.Equals(a, "--trace", System.StringComparison.OrdinalIgnoreCase));
+bool traceAgent = Array.Exists(commandLineArgs,
+    a => string.Equals(a, "--trace", StringComparison.OrdinalIgnoreCase));
 
 // Configure OpenAI client with pipeline logging so we can see
 // the raw JSON requests and responses when verbose mode is enabled.
-ILoggerFactory loggerFactory = Microsoft.Extensions.Logging.LoggerFactory.Create(builder =>
+ILoggerFactory loggerFactory = LoggerFactory.Create(builder =>
 {
     builder
         .AddConsole()
@@ -148,13 +148,11 @@ AnsiConsole.WriteLine("Please enter your travel question and press Enter:");
 AnsiConsole.Write("User: ");
 string prompt = Console.ReadLine() ?? string.Empty;
 AnsiConsole.WriteLine();
+AnsiConsole.WriteLine();
+AnsiConsole.MarkupLine($"[dim]🎯 User prompt:[/] [white]{prompt}[/]");
+AnsiConsole.WriteLine();
 
-if (traceAgent)
-{
-    AnsiConsole.MarkupLine($"[dim]🎯 User prompt:[/] [white]{prompt}[/]");
-    AnsiConsole.WriteLine();
-}
-
+// Run the main travel advisor agent with the user's prompt
 AgentRunResponse result = await travelAdvisorAgent.RunAsync(prompt);
 
 // Display the final response from the agent
