@@ -18,7 +18,7 @@ using ModelContextProtocol.Client;
 using OpenAI;
 using System.Text.RegularExpressions;
 
-var config = new ConfigurationBuilder()
+IConfigurationRoot config = new ConfigurationBuilder()
     .AddUserSecrets("ms-agent-framework-samples-secrets")
     .Build();
 
@@ -86,7 +86,7 @@ AnsiConsole.Write(new FigletText("AI Dev Team").Color(Color.Green));
 AnsiConsole.MarkupLine("[green]Group Chat + GitHub MCP Server[/]\n");
 
 // Step 1: OpenAI
-var chatClient = new OpenAIClient(new ApiKeyCredential(OPENAI_API_KEY))
+IChatClient chatClient = new OpenAIClient(new ApiKeyCredential(OPENAI_API_KEY))
     .GetChatClient(CHAT_MODEL_ID)
     .AsIChatClient();
 AnsiConsole.MarkupLine("[cyan]✅ OpenAI configured[/]");
@@ -94,42 +94,42 @@ AnsiConsole.MarkupLine("[cyan]✅ OpenAI configured[/]");
 // Step 2: Connect to GitHub MCP Server
 AnsiConsole.MarkupLine("[yellow]📡 Connecting to GitHub MCP Server...[/]");
 
-var transportOptions = new HttpClientTransportOptions
+HttpClientTransportOptions transportOptions = new()
 {
     Name = "GitHub",
     Endpoint = new Uri("https://api.githubcopilot.com/mcp/"),
     AdditionalHeaders = new Dictionary<string, string> { ["Authorization"] = $"Bearer {githubPat}" }
 };
-await using var transport = new HttpClientTransport(transportOptions);
-await using var mcpClient = await McpClient.CreateAsync(transport);
-var mcpTools = await mcpClient.ListToolsAsync();
+await using HttpClientTransport transport = new(transportOptions);
+await using McpClient mcpClient = await McpClient.CreateAsync(transport);
+IList<McpClientTool> mcpTools = await mcpClient.ListToolsAsync();
 
 AnsiConsole.MarkupLine($"[cyan]✅ Connected - {mcpTools.Count} tools available[/]");
 
-// Helper to find tools
+// Helper method to find tools
 McpClientTool? Tool(string name) => mcpTools.FirstOrDefault(t => t.Name.Equals(name, StringComparison.OrdinalIgnoreCase));
 
 // Step 3: Create Agents with GitHub MCP Tools
-var analystTools = new[] 
-    { 
-        Tool("issue_read"), 
-        Tool("get_file_contents") 
-    }.Where(t => t != null).Cast<AITool>().ToList();
+List<AITool> analystTools = [.. new[]
+    {
+        Tool("issue_read"),
+        Tool("get_file_contents")
+    }.Cast<AITool>()];
 
-var coderTools = new[] 
-    { 
-        Tool("create_branch"), 
-        Tool("create_or_update_file"), 
+List<AITool> coderTools = [.. new[]
+    {
+        Tool("create_branch"),
+        Tool("create_or_update_file"),
         Tool("delete_file"),
-        Tool("get_file_contents") 
-    }.Where(t => t != null).Cast<AITool>().ToList();
+        Tool("get_file_contents")
+    }.Cast<AITool>()];
 
-var reviewerTools = new[] 
-    { 
-        Tool("get_file_contents"), 
-        Tool("pull_request_read"), 
-        Tool("create_pull_request") 
-    }.Where(t => t != null).Cast<AITool>().ToList();
+List<AITool> reviewerTools = [.. new[]
+    {
+        Tool("get_file_contents"),
+        Tool("pull_request_read"),
+        Tool("create_pull_request")
+    }.Cast<AITool>()];
 
 // Define the context of the system being worked on, all agents share this
 string systemContext = """
@@ -324,7 +324,7 @@ AnsiConsole.MarkupLine("[blue]✅ Analyst[/], [magenta]Coder[/], [yellow]Reviewe
 
 // Step 5: Build Group Chat Workflow with LLM-based Orchestrator
 // The orchestrator agent is passed to the manager - it decides who speaks next using AI!
-var workflow = AgentWorkflowBuilder
+Workflow workflow = AgentWorkflowBuilder
     .CreateGroupChatBuilderWith(agents => new OrchestratorAgentManager(agents, orchestratorAgent))
     .AddParticipants(analystAgent, coderAgent, reviewerAgent)
     .Build();
@@ -336,47 +336,75 @@ AnsiConsole.MarkupLine("\n[green bold]🚀 Starting Group Chat with LLM Orchestr
 
 // Step 7: Run Workflow
 string task = $"Implement issue #{issue} in {GITHUB_OWNER}/{GITHUB_REPO}. Analyst reads issue, Coder implements, Reviewer approves and creates PR.";
-var messages = new List<ChatMessage> { new(ChatRole.User, task) };
+List<ChatMessage> messages = [new(ChatRole.User, task)];
 
 int round = 0;
 string currentAgent = "";
 
-var run = await InProcessExecution.StreamAsync(workflow, messages);
+// Start the workflow in STREAMING mode - this allows us to receive events in real-time
+// as agents process, rather than waiting for the entire workflow to complete.
+// InProcessExecution.StreamAsync returns a StreamingRun that we can watch for events.
+StreamingRun run = await InProcessExecution.StreamAsync(workflow, messages);
+
+// Send a TurnToken to kick off the workflow execution.
+// emitEvents: true means we want to receive granular events (AgentRunUpdateEvent, etc.)
+// Without this, we wouldn't get the streaming updates from each agent.
 await run.TrySendMessageAsync(new TurnToken(emitEvents: true));
 
-await foreach (var evt in run.WatchStreamAsync())
+// WatchStreamAsync() returns an async enumerable of WorkflowEvent objects.
+// This is the core streaming loop - we process events as they arrive from the workflow.
+// Events include: AgentRunUpdateEvent (agent output), WorkflowOutputEvent (workflow done), etc.
+await foreach (WorkflowEvent evt in run.WatchStreamAsync())
 {
+    // AgentRunUpdateEvent fires when an agent produces output (streaming tokens, messages, etc.)
+    // This is the most common event type during workflow execution.
     if (evt is AgentRunUpdateEvent update)
     {
+        // ExecutorId contains the name of the agent currently running (e.g., "Analyst", "Coder")
+        // We use this to detect when the workflow switches to a different agent.
         string agent = update.ExecutorId ?? "Unknown";
+        
+        // Detect agent transitions - when a new agent starts speaking, display a header
         if (agent != currentAgent)
         {
             currentAgent = agent;
             round++;
-            var color = agent.Contains("Analyst") ? "blue" : 
-                       agent.Contains("Coder") ? "magenta" : 
-                       agent.Contains("Reviewer") ? "yellow" : "white";
+            
+            // Color-code each agent for visual distinction in the terminal
+            string color = agent.Contains("Analyst") ?   "blue" :
+                           agent.Contains("Coder") ?     "magenta" :
+                           agent.Contains("Reviewer") ?  "yellow" : "white";
+
+            // Display a Spectre.Console rule as a visual separator between agent turns
             AnsiConsole.WriteLine();
             AnsiConsole.Write(new Rule($"[{color}]Round {round} - {agent}[/]").RuleStyle(color));
             AnsiConsole.WriteLine();
         }
 
-        foreach (var msg in update.AsResponse().Messages)
+        // Extract and display the actual message content from this update event.
+        // AsResponse() converts the update to a ChatCompletion-style response with Messages.
+        foreach (ChatMessage msg in update.AsResponse().Messages)
         {
             if (!string.IsNullOrEmpty(msg.Text))
             {
-                var c = currentAgent.Contains("Analyst") ? "blue" : 
-                        currentAgent.Contains("Coder") ? "magenta" : 
-                        currentAgent.Contains("Reviewer") ? "yellow" : "white";
+                // Apply the same color coding to the message text
+                string c = currentAgent.Contains("Analyst") ?   "blue" :
+                           currentAgent.Contains("Coder") ?     "magenta" :
+                           currentAgent.Contains("Reviewer") ?  "yellow" : "white";
+
+                // Markup.Escape() prevents any special Spectre markup characters in the
+                // agent's output from being interpreted (e.g., [red] in code wouldn't break)
                 AnsiConsole.Markup($"[{c}]{Markup.Escape(msg.Text)}[/]");
             }
         }
     }
+    // WorkflowOutputEvent signals that the entire workflow has completed.
+    // This fires when ShouldTerminateAsync returns true (Reviewer approved, or max iterations hit).
     else if (evt is WorkflowOutputEvent)
     {
         AnsiConsole.WriteLine();
         AnsiConsole.Write(new Rule("[green]✅ Complete[/]").RuleStyle("green"));
-        break;
+        break; // Exit the streaming loop - we're done!
     }
 }
 
@@ -439,20 +467,21 @@ AnsiConsole.MarkupLine($"\n[dim]Completed in {round} rounds[/]\n");
  * ║                                                                                                       ║
  * ║  GroupChatManager has two abstract/virtual methods that control the conversation flow:                ║
  * ║                                                                                                       ║
- * ║  1. SelectNextAgentAsync(history) → AIAgent                                                           ║
+ * ║  1. SelectNextAgentAsync(history) → AIAgent  [protected internal abstract in base class]              ║
  * ║     Called by GroupChatHost to determine WHO speaks next.                                             ║
  * ║     In RoundRobinGroupChatManager: cycles through agents in order (A → B → C → A → ...)               ║
  * ║     In OUR implementation: asks an LLM to decide based on conversation context.                       ║
  * ║                                                                                                       ║
- * ║  2. ShouldTerminateAsync(history) → bool                                                              ║
+ * ║  2. ShouldTerminateAsync(history) → bool  [protected internal virtual in base class]                  ║
  * ║     Called by GroupChatHost BEFORE each turn to check if we should stop.                              ║
- * ║     In RoundRobinGroupChatManager: only checks MaximumIterationCount.                                 ║
+ * ║     In GroupChatManager base: only checks MaximumIterationCount (RoundRobin inherits this).           ║
  * ║     In OUR implementation: also checks for explicit Reviewer approval.                                ║
  * ║                                                                                                       ║
  * ║  The GroupChatHost (internal framework class) orchestrates the flow like this:                        ║
- * ║     1. Receive messages → 2. ShouldTerminateAsync? → 3. SelectNextAgentAsync → 4. Run agent → repeat  ║
+ * ║     1. Receive messages → 2. ShouldTerminateAsync? → 3. UpdateHistoryAsync → 4. SelectNextAgentAsync  ║
+ * ║     → 5. IterationCount++ → 6. Run agent → repeat                                                     ║
  * ║                                                                                                       ║
- * ║  Source: GroupChatHost.cs lines 26-56 in microsoft/agent-framework repo                               ║
+ * ║  Source: GroupChatHost.cs in microsoft/agent-framework repo                                           ║
  * ║  https://github.com/microsoft/agent-framework/blob/main/dotnet/src/Microsoft.Agents.AI.Workflows/Specialized/GroupChatHost.cs
  * ║                                                                                                       ║
  * ║  ─────────────────────────────────────────────────────────────────────────────────────────────────    ║
@@ -536,14 +565,14 @@ class OrchestratorAgentManager : RoundRobinGroupChatManager
         // Optimization: If this is the very first turn, we know we need the Analyst.
         if (history.Count == 1 && history[0].Role == ChatRole.User)
         {
-             var analyst = _agents.FirstOrDefault(a => a.Name!.Contains("Analyst", StringComparison.OrdinalIgnoreCase));
-             if (analyst != null) 
-             {
-                 AnsiConsole.WriteLine();
-                 AnsiConsole.WriteLine();
-                 AnsiConsole.MarkupLine($"\n[green]🤖 ORCHESTRATOR: Analyst (Auto-selected for start)[/]");
-                 return analyst;
-             }
+            AIAgent? analyst = _agents.FirstOrDefault(a => a.Name!.Contains("Analyst", StringComparison.OrdinalIgnoreCase));
+            if (analyst != null)
+            {
+                AnsiConsole.WriteLine();
+                AnsiConsole.WriteLine();
+                AnsiConsole.MarkupLine($"\n[green]🤖 ORCHESTRATOR: Analyst (Auto-selected for start)[/]");
+                return analyst;
+            }
         }
 
         // Build a prompt for the orchestrator with conversation context
@@ -551,11 +580,11 @@ class OrchestratorAgentManager : RoundRobinGroupChatManager
 
         // Ask the orchestrator agent who should speak next using RunAsync
         // Note: We create a new thread each time - the orchestrator is stateless
-        var thread = _orchestrator.GetNewThread();
-        var runResult = await _orchestrator.RunAsync(prompt, thread, cancellationToken: ct);
-        
+        AgentThread thread = _orchestrator.GetNewThread();
+        AgentRunResponse runResult = await _orchestrator.RunAsync(prompt, thread, cancellationToken: ct);
+
         // Get the response text from the result
-        var decision = runResult.Messages.LastOrDefault()?.Text?.Trim() ?? "";
+        string decision = runResult.Messages.LastOrDefault()?.Text?.Trim() ?? "";
 
         // Log the orchestrator's decision (for debugging/visibility)
         AnsiConsole.WriteLine();
@@ -572,7 +601,7 @@ class OrchestratorAgentManager : RoundRobinGroupChatManager
         }
 
         // Find the agent by name (case-insensitive partial match)
-        foreach (var agent in _agents)
+        foreach (AIAgent agent in _agents)
         {
             if (!string.IsNullOrEmpty(agent.Name) && decision.Contains(agent.Name, StringComparison.OrdinalIgnoreCase))
             {
@@ -602,7 +631,7 @@ class OrchestratorAgentManager : RoundRobinGroupChatManager
     /// </remarks>
     private static string BuildConversationSummary(IReadOnlyList<ChatMessage> history)
     {
-        var sb = new System.Text.StringBuilder();
+        System.Text.StringBuilder sb = new();
         sb.AppendLine("You are the orchestrator for a software development team. Your ONLY job is to decide which agent should speak next.");
         sb.AppendLine();
         sb.AppendLine("Available agents:");
@@ -619,19 +648,19 @@ class OrchestratorAgentManager : RoundRobinGroupChatManager
         sb.AppendLine();
         sb.AppendLine("Conversation history:");
         sb.AppendLine();
-        
+
         // Include conversation history (limit to avoid token overflow)
-        foreach (var msg in history.TakeLast(1000))
+        foreach (ChatMessage msg in history.TakeLast(1000))
         {
-            var author = msg.AuthorName ?? msg.Role.ToString();
+            string author = msg.AuthorName ?? msg.Role.ToString();
             // Truncate very long messages to prevent token overflow
-            var text = msg.Text?.Length > 50000 ? msg.Text[..50000] + "..." : msg.Text;
+            string? text = msg.Text?.Length > 50000 ? msg.Text[..50000] + "..." : msg.Text;
             sb.AppendLine($"[{author}]: {text}");
         }
-        
+
         sb.AppendLine();
         sb.AppendLine("Based on this conversation, which agent should speak next? Reply with ONLY: Analyst, Coder, Reviewer, or TERMINATE");
-        
+
         return sb.ToString();
     }
 
@@ -676,17 +705,17 @@ class OrchestratorAgentManager : RoundRobinGroupChatManager
             return ValueTask.FromResult(true);
         }
 
-        var last = history.LastOrDefault();
-        
+        ChatMessage? last = history.LastOrDefault();
+
         // Only check for termination when the Reviewer just spoke
         // Other agents (Analyst, Coder) cannot terminate the workflow
         if (last?.AuthorName?.Contains("Reviewer", StringComparison.OrdinalIgnoreCase) == true && last.Text is { } text)
         {
-            var upperText = text.ToUpperInvariant();
-            
+            string upperText = text.ToUpperInvariant();
+
             // STEP 1: Check for REJECTION indicators (blockers)
             // If any of these are present, the Reviewer is NOT approving
-            bool hasRejectionIndicators = 
+            bool hasRejectionIndicators =
                 upperText.Contains("CANNOT APPROVE") ||
                 upperText.Contains("NOT APPROVED") ||
                 upperText.Contains("REQUIRED CHANGES") ||
@@ -697,15 +726,15 @@ class OrchestratorAgentManager : RoundRobinGroupChatManager
                 upperText.Contains("ISSUES FOUND") ||
                 upperText.Contains("PROBLEMS FOUND") ||
                 upperText.Contains("WHY I CANNOT APPROVE");
-            
+
             if (hasRejectionIndicators)
             {
                 // Explicit rejection - do NOT terminate, let Coder fix it
                 return ValueTask.FromResult(false);
             }
-            
+
             // STEP 2: Check for APPROVAL patterns (only if no rejection found)
-            bool hasExplicitApproval = 
+            bool hasExplicitApproval =
                 text.Contains("✅ APPROVED", StringComparison.OrdinalIgnoreCase) ||
                 text.Contains("PR CREATED", StringComparison.OrdinalIgnoreCase) ||
                 text.Contains("PULL REQUEST CREATED", StringComparison.OrdinalIgnoreCase) ||
@@ -714,17 +743,17 @@ class OrchestratorAgentManager : RoundRobinGroupChatManager
                 // This catches "APPROVED." or "APPROVED!" but not "NOT APPROVED"
                 // Also allows colon (:) for cases like "Reviewer: APPROVED"
                 Regex.IsMatch(
-                    text, 
+                    text,
                     @"(?:^|[\.\:!]\s*|\n\s*)APPROVED(?:\s|!|\.|$)",
                     RegexOptions.IgnoreCase);
-            
+
             if (hasExplicitApproval)
             {
                 // Explicit approval - terminate the workflow successfully!
                 return ValueTask.FromResult(true);
             }
         }
-        
+
         // No explicit approval/rejection - check base class termination
         // This handles MaximumIterationCount (100) as a safety limit
         return base.ShouldTerminateAsync(history, ct);
