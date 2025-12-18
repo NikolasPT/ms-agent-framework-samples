@@ -492,14 +492,13 @@ sealed class RawJsonLoggingPolicy(bool showPanels, bool showRawJson, int maxByte
         string method = request.Method;
         Uri? uri = request.Uri;
 
-        if (showRawJson)
-        {
-            AnsiConsole.MarkupLine($"[dim]>> HTTP {method} {uri}[/]");
-        }
-
         BinaryContent? content = request.Content;
         if (content is null)
         {
+            if (showRawJson)
+            {
+                AnsiConsole.MarkupLine($"[dim]>> HTTP {method} {uri}[/]");
+            }
             return;
         }
 
@@ -508,6 +507,10 @@ sealed class RawJsonLoggingPolicy(bool showPanels, bool showRawJson, int maxByte
         byte[] bytes = ms.ToArray();
         if (bytes.Length == 0)
         {
+            if (showRawJson)
+            {
+                AnsiConsole.MarkupLine($"[dim]>> HTTP {method} {uri}[/]");
+            }
             return;
         }
 
@@ -518,19 +521,23 @@ sealed class RawJsonLoggingPolicy(bool showPanels, bool showRawJson, int maxByte
 
         string text = Encoding.UTF8.GetString(bytes);
 
+        // Extract and display tool results BEFORE logging the request
+        // so they appear right after the response that triggered them
+        if (showPanels)
+        {
+            DisplayToolResultsFromRequest(text);
+        }
+
         if (showRawJson)
         {
+            AnsiConsole.MarkupLine($"[dim]>> HTTP {method} {uri}[/]");
             string pretty = TryPrettyJson(text);
             AnsiConsole.MarkupLine("[dim]>> Request Body:[/]");
             AnsiConsole.WriteLine(pretty);
             AnsiConsole.WriteLine();
         }
 
-        // Extract and display tool results in a nice formatted cyan box (always when showPanels)
-        if (showPanels)
-        {
-            DisplayToolResultsFromRequest(text);
-        }
+        // Tool results already displayed above, no need to call again
     }
 
     private void LogResponse(PipelineResponse response)
