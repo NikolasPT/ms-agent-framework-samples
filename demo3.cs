@@ -16,7 +16,6 @@ using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Configuration;
 using ModelContextProtocol.Client;
 using OpenAI;
-using System.Text.RegularExpressions;
 
 IConfigurationRoot config = new ConfigurationBuilder()
     .AddUserSecrets("ms-agent-framework-samples-secrets")
@@ -25,7 +24,7 @@ IConfigurationRoot config = new ConfigurationBuilder()
 string OPENAI_API_KEY = config["OpenAI:ApiKey"]!;
 string githubPat = config["GitHub:PAT"]!;
 
-const string CHAT_MODEL_ID = "gpt-5-mini";
+const string CHAT_MODEL_ID = "gpt-5-nano";
 const string GITHUB_OWNER = "NikolasPT";
 const string GITHUB_REPO = "demo";
 
@@ -486,25 +485,22 @@ AnsiConsole.MarkupLine($"\n[dim]Completed in {round} rounds[/]\n");
  * ║                                                                                                       ║
  * ║  ─────────────────────────────────────────────────────────────────────────────────────────────────    ║
  * ║                                                                                                       ║
- * ║  WHY HAVE BOTH LLM ORCHESTRATOR AND HARDCODED ShouldTerminateAsync?                                   ║
- * ║  ───────────────────────────────────────────────────────────────────                                  ║
- * ║  This is a HYBRID approach that combines flexibility with reliability:                                ║
+ * ║  LLM-BASED ORCHESTRATION FOR BOTH ROUTING AND TERMINATION                                             ║
+ * ║  ────────────────────────────────────────────────────────                                             ║
+ * ║  The Orchestrator LLM makes ALL decisions in ShouldTerminateAsync:                                    ║
  * ║                                                                                                       ║
- * ║  • SelectNextAgentAsync uses LLM for ROUTING decisions (who speaks next)                              ║
- * ║    → Flexible: handles ambiguity, can explain decisions, adapts to context                            ║
- * ║    → The orchestrator agent reads conversation history and picks the best next agent                  ║
+ * ║  • ShouldTerminateAsync calls the LLM with conversation history                                       ║
+ * ║    → LLM responds: "Analyst", "Coder", "Reviewer", or "TERMINATE"                                     ║
+ * ║    → If "TERMINATE" → return true (stop workflow)                                                     ║
+ * ║    → If agent name → cache it and return false (continue)                                             ║
  * ║                                                                                                       ║
- * ║  • ShouldTerminateAsync uses HARDCODED rules for TERMINATION                                          ║
- * ║    → Reliable: we MUST stop when Reviewer approves - this is non-negotiable                           ║
- * ║    → Pattern matching is faster than an LLM call for simple keyword detection                         ║
- * ║    → Prevents LLM hallucinations from causing premature or missed termination                         ║
+ * ║  • SelectNextAgentAsync simply returns the cached agent                                               ║
+ * ║    → No LLM call needed here - decision was already made                                              ║
+ * ║    → This ensures "TERMINATE" takes effect immediately                                                ║
  * ║                                                                                                       ║
- * ║  The official documentation shows this exact pattern in the "Advanced: Custom Speaker Selection"      ║
- * ║  section - a custom manager (ApprovalBasedManager) that inherits RoundRobinGroupChatManager           ║
- * ║  and overrides ShouldTerminateAsync with approval detection logic.                                    ║
- * ║                                                                                                       ║
- * ║  Reference: https://learn.microsoft.com/en-us/agent-framework/user-guide/workflows/orchestrations/group-chat#advanced-custom-speaker-selection
- * ║                                                                                                       ║
+ * ║  WHY THIS DESIGN?                                                                                     ║
+ * ║  The framework calls ShouldTerminateAsync BEFORE SelectNextAgentAsync.                                ║
+ * ║  By moving the LLM call to ShouldTerminateAsync, termination decisions are respected immediately.     ║
  * ║                                                                                                       ║
  * ╚═══════════════════════════════════════════════════════════════════════════════════════════════════════╝
  */
@@ -513,7 +509,7 @@ class OrchestratorAgentManager : RoundRobinGroupChatManager
     private readonly AIAgent _orchestrator;          // The LLM agent that decides who speaks next
     private readonly IReadOnlyList<AIAgent> _agents; // All participant agents (Analyst, Coder, Reviewer)
     private readonly Dictionary<string, AIAgent> _agentsByName; // Quick lookup by name
-    private bool _terminateNextRound = false; // Flag to force termination if LLM decides so
+    private AIAgent? _cachedNextAgent;               // Cached routing decision from ShouldTerminateAsync
 
     /// <summary>
     /// Creates a new orchestrator manager that uses an LLM agent for speaker selection.
@@ -536,83 +532,23 @@ class OrchestratorAgentManager : RoundRobinGroupChatManager
     }
 
     /// <summary>
-    /// LLM-BASED ROUTING: Asks the orchestrator agent which participant should speak next.
+    /// Returns the cached agent decision from ShouldTerminateAsync.
     /// </summary>
     /// <remarks>
-    /// This is the KEY OVERRIDE that makes this an "LLM-based orchestrator" vs a code-based one.
-    /// 
-    /// Flow:
-    /// 1. Build a prompt containing the full conversation history
-    /// 2. Ask the orchestrator agent to decide who speaks next
-    /// 3. Parse the response ("Analyst", "Coder", "Reviewer", or "TERMINATE")
-    /// 4. Return the corresponding AIAgent
-    /// 
-    /// Why LLM-based routing?
-    /// - Handles ambiguous situations ("should we re-review or move on?")
-    /// - Can understand context and nuance in conversation
-    /// - No need to anticipate every possible scenario in code
-    /// - Can be easily modified by changing the orchestrator's instructions
-    /// 
-    /// Fallback: If the LLM returns something unexpected, we fall back to round-robin.
-    /// This ensures the workflow continues even with malformed responses.
-    /// 
-    /// IMPORTANT: When LLM says "TERMINATE", we return _agents[0] (any agent).
-    /// This is because ShouldTerminateAsync will detect termination and stop the workflow.
-    /// The returned agent won't actually run - it's just a placeholder.
+    /// The LLM call now happens in ShouldTerminateAsync, which runs BEFORE this method.
+    /// This ensures termination decisions take effect immediately.
     /// </remarks>
-    protected override async ValueTask<AIAgent> SelectNextAgentAsync(IReadOnlyList<ChatMessage> history, CancellationToken ct = default)
+    protected override ValueTask<AIAgent> SelectNextAgentAsync(IReadOnlyList<ChatMessage> history, CancellationToken ct = default)
     {
-        // Optimization: If this is the very first turn, we know we need the Analyst.
-        if (history.Count == 1 && history[0].Role == ChatRole.User)
+        // Return the cached decision from ShouldTerminateAsync
+        if (_cachedNextAgent != null)
         {
-            AIAgent? analyst = _agents.FirstOrDefault(a => a.Name!.Contains("Analyst", StringComparison.OrdinalIgnoreCase));
-            if (analyst != null)
-            {
-                AnsiConsole.WriteLine();
-                AnsiConsole.WriteLine();
-                AnsiConsole.MarkupLine($"\n[green]🤖 ORCHESTRATOR: Analyst (Auto-selected for start)[/]");
-                return analyst;
-            }
+            return ValueTask.FromResult(_cachedNextAgent);
         }
 
-        // Build a prompt for the orchestrator with conversation context
-        string prompt = BuildConversationSummary(history);
-
-        // Ask the orchestrator agent who should speak next using RunAsync
-        // Note: We create a new thread each time - the orchestrator is stateless
-        AgentThread thread = _orchestrator.GetNewThread();
-        AgentRunResponse runResult = await _orchestrator.RunAsync(prompt, thread, cancellationToken: ct);
-
-        // Get the response text from the result
-        string decision = runResult.Messages.LastOrDefault()?.Text?.Trim() ?? "";
-
-        // Log the orchestrator's decision (for debugging/visibility)
-        AnsiConsole.WriteLine();
-        AnsiConsole.WriteLine();
-        AnsiConsole.MarkupLine($"\n[green]🤖 ORCHESTRATOR: {Markup.Escape(decision)}[/]");
-
-        // Handle TERMINATE response
-        // The actual termination is handled by ShouldTerminateAsync, not here.
-        // We just need to return some agent - it won't run because termination will trigger.
-        if (decision.Contains("TERMINATE", StringComparison.OrdinalIgnoreCase))
-        {
-            _terminateNextRound = true;
-            return _agents[0];
-        }
-
-        // Find the agent by name (case-insensitive partial match)
-        foreach (AIAgent agent in _agents)
-        {
-            if (!string.IsNullOrEmpty(agent.Name) && decision.Contains(agent.Name, StringComparison.OrdinalIgnoreCase))
-            {
-                return agent;
-            }
-        }
-
-        // Fallback: LLM gave unclear response, use inherited round-robin behavior
-        // This prevents the workflow from crashing on unexpected LLM output
-        AnsiConsole.MarkupLine($"[yellow]⚠️ Unclear decision '{Markup.Escape(decision)}', using round-robin[/]");
-        return await base.SelectNextAgentAsync(history, ct);
+        // Fallback: should never happen, but use round-robin if cache is empty
+        AnsiConsole.MarkupLine($"[yellow]⚠️ No cached agent, using round-robin[/]");
+        return base.SelectNextAgentAsync(history, ct);
     }
 
     /// <summary>
@@ -665,97 +601,63 @@ class OrchestratorAgentManager : RoundRobinGroupChatManager
     }
 
     /// <summary>
-    /// HARDCODED TERMINATION: Checks if the Reviewer has explicitly approved.
+    /// LLM-BASED TERMINATION: Asks the orchestrator if we should terminate or continue.
     /// </summary>
     /// <remarks>
-    /// WHY HARDCODED INSTEAD OF LLM?
-    /// ─────────────────────────────
-    /// Termination detection is CRITICAL - we must stop at the right time:
-    /// - Too early: PR never gets created
-    /// - Too late: Wasted LLM calls, potential loops
+    /// This method now calls the Orchestrator LLM to make ALL decisions:
+    /// - If LLM says "TERMINATE" → return true (stop workflow)
+    /// - If LLM says an agent name → cache it and return false (continue)
     /// 
-    /// Pattern matching is more reliable than LLM for this because:
-    /// 1. Faster (no API call needed)
-    /// 2. Deterministic (same input = same output)
-    /// 3. No hallucination risk (LLM might misinterpret context)
-    /// 4. Predictable cost (zero tokens consumed)
-    /// 
-    /// WHY CHECK EXPLICIT PATTERNS?
-    /// ────────────────────────────
-    /// The Reviewer might say "APPROVED" in different contexts:
-    /// ❌ "This CANNOT be APPROVED until..." → rejection, not approval
-    /// ❌ "Once approved, the PR will..." → future tense, not approval  
-    /// ✅ "✅ APPROVED - PR CREATED" → explicit approval
-    /// ✅ "APPROVED. Creating pull request..." → explicit approval
-    /// 
-    /// We check for rejection indicators FIRST to avoid false positives.
-    /// Only if no rejection is found, we check for approval patterns.
-    /// 
-    /// FALLBACK TO BASE:
-    /// If no explicit approval is found, we call base.ShouldTerminateAsync().
-    /// This checks MaximumIterationCount (100) as a safety limit.
-    /// 
-    /// Reference pattern from official docs (ApprovalBasedManager example):
-    /// https://learn.microsoft.com/en-us/agent-framework/user-guide/workflows/orchestrations/group-chat#advanced-custom-speaker-selection
+    /// The cached agent is then used by SelectNextAgentAsync.
+    /// This ensures the LLM's decision is respected immediately.
     /// </remarks>
-    protected override ValueTask<bool> ShouldTerminateAsync(IReadOnlyList<ChatMessage> history, CancellationToken ct = default)
+    protected override async ValueTask<bool> ShouldTerminateAsync(IReadOnlyList<ChatMessage> history, CancellationToken ct = default)
     {
-        if (_terminateNextRound)
+        // Check base class termination first (MaximumIterationCount safety limit)
+        if (await base.ShouldTerminateAsync(history, ct))
         {
-            return ValueTask.FromResult(true);
+            return true;
         }
 
-        ChatMessage? last = history.LastOrDefault();
-
-        // Only check for termination when the Reviewer just spoke
-        // Other agents (Analyst, Coder) cannot terminate the workflow
-        if (last?.AuthorName?.Contains("Reviewer", StringComparison.OrdinalIgnoreCase) == true && last.Text is { } text)
+        // First turn optimization: always start with Analyst
+        if (history.Count == 1 && history[0].Role == ChatRole.User)
         {
-            string upperText = text.ToUpperInvariant();
-
-            // STEP 1: Check for REJECTION indicators (blockers)
-            // If any of these are present, the Reviewer is NOT approving
-            bool hasRejectionIndicators =
-                upperText.Contains("CANNOT APPROVE") ||
-                upperText.Contains("NOT APPROVED") ||
-                upperText.Contains("REQUIRED CHANGES") ||
-                upperText.Contains("REQUIRED FIXES") ||
-                upperText.Contains("MUST BE ADDRESSED") ||
-                upperText.Contains("REQUEST CHANGES") ||
-                upperText.Contains("REQUESTING CHANGES") ||
-                upperText.Contains("ISSUES FOUND") ||
-                upperText.Contains("PROBLEMS FOUND") ||
-                upperText.Contains("WHY I CANNOT APPROVE");
-
-            if (hasRejectionIndicators)
-            {
-                // Explicit rejection - do NOT terminate, let Coder fix it
-                return ValueTask.FromResult(false);
-            }
-
-            // STEP 2: Check for APPROVAL patterns (only if no rejection found)
-            bool hasExplicitApproval =
-                text.Contains("✅ APPROVED", StringComparison.OrdinalIgnoreCase) ||
-                text.Contains("PR CREATED", StringComparison.OrdinalIgnoreCase) ||
-                text.Contains("PULL REQUEST CREATED", StringComparison.OrdinalIgnoreCase) ||
-                text.Contains("MERGE APPROVED", StringComparison.OrdinalIgnoreCase) ||
-                // Regex: Match "APPROVED" at sentence start or after punctuation
-                // This catches "APPROVED." or "APPROVED!" but not "NOT APPROVED"
-                // Also allows colon (:) for cases like "Reviewer: APPROVED"
-                Regex.IsMatch(
-                    text,
-                    @"(?:^|[\.\:!]\s*|\n\s*)APPROVED(?:\s|!|\.|$)",
-                    RegexOptions.IgnoreCase);
-
-            if (hasExplicitApproval)
-            {
-                // Explicit approval - terminate the workflow successfully!
-                return ValueTask.FromResult(true);
-            }
+            _cachedNextAgent = _agents.FirstOrDefault(a => a.Name!.Contains("Analyst", StringComparison.OrdinalIgnoreCase));
+            AnsiConsole.WriteLine();
+            AnsiConsole.MarkupLine($"[green]🤖 ORCHESTRATOR: Analyst (first turn)[/]");
+            return false;
         }
 
-        // No explicit approval/rejection - check base class termination
-        // This handles MaximumIterationCount (100) as a safety limit
-        return base.ShouldTerminateAsync(history, ct);
+        // Build prompt and ask the Orchestrator LLM
+        string prompt = BuildConversationSummary(history);
+        AgentThread thread = _orchestrator.GetNewThread();
+        AgentRunResponse runResult = await _orchestrator.RunAsync(prompt, thread, cancellationToken: ct);
+        string decision = runResult.Messages.LastOrDefault()?.Text?.Trim() ?? "";
+
+        // Display the decision
+        AnsiConsole.WriteLine();
+        AnsiConsole.MarkupLine($"[green]🤖 ORCHESTRATOR: {Markup.Escape(decision)}[/]");
+        AnsiConsole.WriteLine();
+
+        // Check for TERMINATE
+        if (decision.Contains("TERMINATE", StringComparison.OrdinalIgnoreCase))
+        {
+            _cachedNextAgent = null;
+            return true;  // Stop the workflow
+        }
+
+        // Find and cache the next agent
+        _cachedNextAgent = _agents.FirstOrDefault(a => 
+            !string.IsNullOrEmpty(a.Name) && 
+            decision.Contains(a.Name, StringComparison.OrdinalIgnoreCase));
+
+        // Fallback if LLM response doesn't match any agent
+        if (_cachedNextAgent == null)
+        {
+            AnsiConsole.MarkupLine($"[yellow]⚠️ Unclear decision '{Markup.Escape(decision)}', defaulting to Analyst[/]");
+            _cachedNextAgent = _agents[0];
+        }
+
+        return false;  // Continue the workflow
     }
 }

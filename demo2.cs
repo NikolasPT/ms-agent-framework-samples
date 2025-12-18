@@ -29,7 +29,7 @@ IConfigurationRoot config = new ConfigurationBuilder()
     .Build();
 
 string OPENAI_API_KEY = config["OpenAI:ApiKey"]!;
-const string CHAT_MODEL_ID = "gpt-5-mini";
+const string CHAT_MODEL_ID = "gpt-5-nano";
 
 // Read command-line flags for optional tracing
 string[] commandLineArgs = Environment.GetCommandLineArgs();
