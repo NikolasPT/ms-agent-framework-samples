@@ -24,7 +24,7 @@ IConfigurationRoot config = new ConfigurationBuilder()
 string OPENAI_API_KEY = config["OpenAI:ApiKey"]!;
 string githubPat = config["GitHub:PAT"]!;
 
-const string CHAT_MODEL_ID = "gpt-5-nano";
+const string CHAT_MODEL_ID = "gpt-5-mini";
 const string GITHUB_OWNER = "NikolasPT";
 const string GITHUB_REPO = "demo";
 
@@ -363,16 +363,16 @@ await foreach (WorkflowEvent evt in run.WatchStreamAsync())
         // We use this to detect when the workflow switches to a different agent.
         string agent = update.ExecutorId ?? "Unknown";
         
+        // Color-code each agent for visual distinction in the terminal
+        string color = agent.Contains("Analyst") ?  "blue" :
+                       agent.Contains("Coder") ?    "magenta" :
+                       agent.Contains("Reviewer") ? "yellow" : "white";
+        
         // Detect agent transitions - when a new agent starts speaking, display a header
         if (agent != currentAgent)
         {
             currentAgent = agent;
             round++;
-            
-            // Color-code each agent for visual distinction in the terminal
-            string color = agent.Contains("Analyst") ?   "blue" :
-                           agent.Contains("Coder") ?     "magenta" :
-                           agent.Contains("Reviewer") ?  "yellow" : "white";
 
             // Display a Spectre.Console rule as a visual separator between agent turns
             AnsiConsole.WriteLine();
@@ -386,14 +386,9 @@ await foreach (WorkflowEvent evt in run.WatchStreamAsync())
         {
             if (!string.IsNullOrEmpty(msg.Text))
             {
-                // Apply the same color coding to the message text
-                string c = currentAgent.Contains("Analyst") ?   "blue" :
-                           currentAgent.Contains("Coder") ?     "magenta" :
-                           currentAgent.Contains("Reviewer") ?  "yellow" : "white";
-
                 // Markup.Escape() prevents any special Spectre markup characters in the
                 // agent's output from being interpreted (e.g., [red] in code wouldn't break)
-                AnsiConsole.Markup($"[{c}]{Markup.Escape(msg.Text)}[/]");
+                AnsiConsole.Markup($"[{color}]{Markup.Escape(msg.Text)}[/]");
             }
         }
     }
@@ -585,13 +580,11 @@ class OrchestratorAgentManager : RoundRobinGroupChatManager
         sb.AppendLine("Conversation history:");
         sb.AppendLine();
 
-        // Include conversation history (limit to avoid token overflow)
-        foreach (ChatMessage msg in history.TakeLast(1000))
+        // Include conversation history
+        foreach (ChatMessage msg in history)
         {
             string author = msg.AuthorName ?? msg.Role.ToString();
-            // Truncate very long messages to prevent token overflow
-            string? text = msg.Text?.Length > 50000 ? msg.Text[..50000] + "..." : msg.Text;
-            sb.AppendLine($"[{author}]: {text}");
+            sb.AppendLine($"[{author}]: {msg.Text}");
         }
 
         sb.AppendLine();
