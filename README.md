@@ -88,6 +88,12 @@ An **AI Dev Team** that reads GitHub issues, writes code, and creates pull reque
 - **MCP Integration:** GitHub tools via Model Context Protocol
 - **Custom GroupChatManager:** Extending `RoundRobinGroupChatManager`
 
+**Configuration:** Edit these constants in `demo3.cs` to point to your GitHub repo:
+```csharp
+const string GITHUB_OWNER = "YourUsername";
+const string GITHUB_REPO = "your-repo";
+```
+
 **Architecture:**
 ```
                     ┌────────────────────────────────┐
